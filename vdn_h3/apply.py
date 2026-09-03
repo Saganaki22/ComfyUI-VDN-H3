@@ -85,6 +85,16 @@ def apply_adapters(new_model, converted_by_name, strength, mode, verbose=False):
         sd_keys = set(new_model.model.state_dict().keys())
 
         if mode == "merge":
+            if pruned:
+                adaln_keys = {key_map[m] for m in modules if _is_adaln(m)}
+                if adaln_keys:
+                    loaded = {k: v for k, v in loaded.items()
+                              if k not in adaln_keys}
+                    _log.warning("[vdn] pruned base: %d adaln deltas cannot merge "
+                                 "into a curve base's collapsed adaln; skipping them "
+                                 "(lora_mode=bypass with the MiniMax-H3-Turbo node "
+                                 "installed keeps them via e-grid re-injection)",
+                                 len(adaln_keys))
             n = len(new_model.add_patches(loaded, s))
             report[name] = f"{n} weights merged"
             continue
