@@ -1,5 +1,8 @@
 # ComfyUI-VDN-H3 — VDN-H3 (Video Delta Net) for MiniMax-H3
 
+<img width="1303" height="802" alt="image" src="https://github.com/user-attachments/assets/7cca68bd-2795-4b3f-847c-d7f918ce4d44" />
+
+
 **English** | [中文](README_ZH.md)
 
 Video Delta Net hybrid attention for MiniMax-H3 as a native ComfyUI node. Nearby
