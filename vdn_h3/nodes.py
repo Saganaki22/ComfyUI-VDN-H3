@@ -40,6 +40,7 @@ class ApplyVDNH3:
                            "the GPU per block per step (safe on small cards, a little "
                            "slower). cache_gpu: resident on the GPU after the first "
                            "step (faster; keep ~4.3 GB VRAM free)."}),
+            "verbose": ("BOOLEAN", {"default": False}),
             "attention_backend": (["grouped", "flex"], {
                 "default": "grouped",
                 "tooltip": "How the windowed softmax runs. grouped: one dense SDPA "
@@ -47,7 +48,6 @@ class ApplyVDNH3:
                            "pattern as one compiled FlexAttention kernel over the "
                            "full sequence (faster on long clips; first run compiles, "
                            "falls back to grouped if compile fails)."}),
-            "verbose": ("BOOLEAN", {"default": False}),
         }}
 
     RETURN_TYPES = ("MODEL",)
