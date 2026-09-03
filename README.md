@@ -97,13 +97,14 @@ trained spec; defaults reproduce the released model exactly.
 
 ## Attention backends and stacking
 
-VDN's windowed softmax always runs exact SDPA — this is deliberate: routing the
-windows through quantized backends (sage/kitchen int8) measurably softens
-output, and the released model validated exact local attention. Backend override
-patches (SageAttention, kitchen-int8, KJNodes) still apply to the base model's
-own attention (text refiner, and the dense fallback on very short clips). The
-delta-rule branch never calls softmax kernels and is unaffected by backend
-patches.
+VDN's windowed softmax always runs exact SDPA — dispatched through ComfyUI's
+backend-priority chain (flash / cuDNN / mem-efficient), but never through
+quantized backends: routing the windows through sage/kitchen int8 measurably
+softens output, and the released model validated exact local attention. Backend
+override patches (SageAttention, kitchen-int8, KJNodes) still apply to the base
+model's own attention (text refiner, and the dense fallback on very short
+clips). The delta-rule branch never calls softmax kernels and is unaffected by
+backend patches.
 
 **Do not stack the "MiniMax H3 Scheduled Sol Attention" patch with this node.**
 It replaces `blocks.*.attn.forward` — the same path VDN owns — so wherever SOL
