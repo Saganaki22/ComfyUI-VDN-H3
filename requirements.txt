@@ -1,0 +1,2 @@
+# No additional packages required: the node runs on ComfyUI's existing
+# torch + safetensors installation (pure PyTorch fallback path).
