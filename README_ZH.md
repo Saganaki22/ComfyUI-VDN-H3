@@ -21,9 +21,13 @@ Attention** 线性分支,把平方级的长距离注意力替换为常数成本�
 
 你得不到:头条数字。官方 74.5 倍来自 8 卡并行 + FA4 + FP8 + 8 步蒸馏的组合;上游自己的单卡实测为 50 步约 2.6 倍,而本移植的通用内核略低于此(RTX 5090、1280×736 / 145 帧实测约 17 秒/it —— 见 Benchmarks.md)。想在自己的硬件上试验这套架构,这就是为你准备的;想要实时流式生成的数字,那需要他们的 B200 集群。
 
-| CK, Sol-attn, res_multi / simple — 20 Steps, 1280x736, 3:05 | LightXv2 4-Step Turbo v1.1, CK, Sol-attn, er_sde / beta — 8 steps, 1280x736, 1:24 | VDN-H3 Turbo er_sde / beta — 8 steps, 1280x736, 2:04 | VDN-H3 advanced fast_kernels Turbo er_sde / beta — 8 steps, 1280x736, 1:13 |
-|:---:|:---:|:---:|:---:|
-| <video src="https://github.com/user-attachments/assets/7120657d-af61-4414-b621-53b39208ffe0" controls></video> | <video src="https://github.com/user-attachments/assets/b0373566-fc78-4616-b591-13462c4b50e6" controls></video> | <video src="https://github.com/user-attachments/assets/89cc7155-ca89-459e-9996-5b5f6bfcd284" controls></video> | <video src="https://github.com/user-attachments/assets/5cc9906e-acec-4c61-a3b9-17c79153945b" controls></video> |
+| CK、Sol-attn、res_multi / simple —— 20 步，1280x736，3:05 | LightXv2 4-Step Turbo v1.1、CK、Sol-attn、er_sde / beta —— 8 步，1280x736，1:24 |
+|:---:|:---:|
+| <video src="https://github.com/user-attachments/assets/7120657d-af61-4414-b621-53b39208ffe0" controls></video> | <video src="https://github.com/user-attachments/assets/b0373566-fc78-4616-b591-13462c4b50e6" controls></video> |
+
+| VDN-H3 Turbo、er_sde / beta —— 8 步，1280x736，2:04 | VDN-H3 高级 fast_kernels Turbo、er_sde / beta —— 8 步，1280x736，1:13 |
+|:---:|:---:|
+| <video src="https://github.com/user-attachments/assets/89cc7155-ca89-459e-9996-5b5f6bfcd284" controls></video> | <video src="https://github.com/user-attachments/assets/5cc9906e-acec-4c61-a3b9-17c79153945b" controls></video> |
 
 ### 相同种子
 
