@@ -16,6 +16,12 @@ This package is a **port, not a fork**: it reproduces the official hybrid-attent
 math on ComfyUI's native MiniMax-H3 model as runtime model patches. No ComfyUI core
 files are modified.
 
+| LightXv2 4-Step Turbo v1.1, CK, Sol-attn, er_sde / beta — 8 steps, 1280x736, 1:24 | VDN-H3 Turbo er_sde / beta — 8 steps, 1280x736, 2:04 |
+|:---:|:---:|
+| <video src="https://github.com/user-attachments/assets/b0373566-fc78-4616-b591-13462c4b50e6" controls></video> | <video src="https://github.com/user-attachments/assets/89cc7155-ca89-459e-9996-5b5f6bfcd284" controls></video> |
+
+
+
 ## Install
 
 1. Clone into `ComfyUI/custom_nodes/` and restart ComfyUI:
