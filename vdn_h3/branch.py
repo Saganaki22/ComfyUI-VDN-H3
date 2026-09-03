@@ -11,10 +11,13 @@ Everything here is eager PyTorch -- no Triton, no torch.compile, no CUDA kernels
 Numerics follow the reference inference bodies: A statistics in fp32 (TF32 GEMM), the
 recurrence in fp32 via preallocated banks, bf16 features and readout.
 """
+import logging
 import math
 
 import torch
 import torch.nn.functional as F
+
+_log = logging.getLogger("comfy.vdn")
 
 
 # ---------------------------------------------------------------- delta rules --
@@ -236,7 +239,7 @@ def rms_norm(x, weight, eps):
     return x * torch.rsqrt(ms + eps).to(x.dtype) * weight.to(x.dtype)
 
 
-def linear_epilogue(readout_fhsd, norm_weight, gate, eps):
+def _linear_epilogue_body(readout_fhsd, norm_weight, gate, eps):
     """RMSNorm + output gate over a readout still in [F, H, S, d], with the transpose
     back to token order folded into the store."""
     ms = torch.linalg.vector_norm(
@@ -248,6 +251,27 @@ def linear_epilogue(readout_fhsd, norm_weight, gate, eps):
     rows = frames * per_frame
     return (normed.permute(0, 2, 1, 3).reshape(rows, heads * dim)
             * gate.reshape(rows, heads * dim))
+
+
+_EPILOGUE_FUSED = None
+_EPILOGUE_FUSED_BROKEN = False
+
+
+def linear_epilogue(readout_fhsd, norm_weight, gate, eps, fuse=False):
+    """RMSNorm + output gate, optionally under torch.compile. Eager this walks the
+    full readout several times (norm, rsqrt, two multiplies, the gated store); the
+    fused variant is one inductor kernel. Compilation failure falls back to eager
+    permanently (same math, just slower)."""
+    global _EPILOGUE_FUSED, _EPILOGUE_FUSED_BROKEN
+    if fuse and not _EPILOGUE_FUSED_BROKEN:
+        try:
+            if _EPILOGUE_FUSED is None:
+                _EPILOGUE_FUSED = torch.compile(_linear_epilogue_body)
+            return _EPILOGUE_FUSED(readout_fhsd, norm_weight, gate, eps)
+        except Exception as e:
+            _EPILOGUE_FUSED_BROKEN = True
+            _log.warning("[vdn] fused epilogue compile failed (%s); using eager", e)
+    return _linear_epilogue_body(readout_fhsd, norm_weight, gate, eps)
 
 
 # ---------------------------------------------------------------- the branch --
@@ -271,6 +295,7 @@ class LinearBranch:
         self.short_conv = tuple(short_conv) or None
         self.enable_text_state = enable_text_state
         self.delta_rule = delta_rule
+        self.fuse_epilogue = False
         self._backend = None
         self._backend_key = None
 
@@ -392,4 +417,5 @@ class LinearBranch:
         readout = torch.matmul(query_by_frame.permute(0, 2, 1, 3),
                                linear_state.transpose(-1, -2))
         return linear_epilogue(readout, w["norm.weight"], gate,
-                               w["norm.weight"].new_tensor(1e-6).item())
+                               w["norm.weight"].new_tensor(1e-6).item(),
+                               fuse=self.fuse_epilogue)

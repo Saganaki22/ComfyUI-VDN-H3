@@ -77,6 +77,20 @@ Drop it between your MiniMax-H3 loader and the sampler; conditioning, LoRAs,
 samplers, VAE decode and video/audio output nodes are unchanged. Example workflow:
 `example_workflows/vdn_h3_t2v_8step.json`.
 
+**Apply VDN-H3 Advanced** — everything above plus, for experimenters:
+
+| Input | Meaning |
+|---|---|
+| `stage_b_strength` / `turbo_strength` | per-adapter strengths (default node applies one global strength) |
+| `window_radius`, `window_chunk` | deviate from the trained c=5 r=1 window (ablation) |
+| `anchor_frames` | `both` / `columns` / `rows` / `none` (trained: `both`) |
+| `text_state` | write the prompt into the branch's states at init (trained: on) |
+| `linear_branch` | off = window-only ablation (debug — output loses all long-range context) |
+| `fast_kernels` | torch.compile the branch's RMSNorm+gate epilogue into one kernel (same math; falls back to eager if compile fails) |
+
+Ablation inputs warn in the console when they deviate from the checkpoint's
+trained spec; defaults reproduce the released model exactly.
+
 ## Attention backends and stacking
 
 VDN's windowed softmax always runs exact SDPA — this is deliberate: routing the

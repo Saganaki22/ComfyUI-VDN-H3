@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-vdn-h3"
-version = "1.0.2"
+version = "1.1.0"
 description = "VDN-H3 (Video Delta Net) hybrid attention for MiniMax-H3"
 license = { file = "LICENSE" }
 dependencies = []
@@ -12,5 +12,6 @@ Repository = "https://github.com/Saganaki22/ComfyUI-VDN-H3"
 PublisherId = "saganaki22"
 DisplayName = "ComfyUI-VDN-H3"
 Icon = "https://avatars.githubusercontent.com/u/84208527"
+
 
 

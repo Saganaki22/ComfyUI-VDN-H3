@@ -69,6 +69,19 @@ safetensors)运行官方数学,不需要 Triton、flash-attn-4、CUDA 编译或
 把它接在 MiniMax-H3 加载器和采样器之间即可;条件、LoRA、采样器、VAE 解码
 和视频/音频输出节点都不需要改动。示例工作流:`example_workflows/vdn_h3_t2v_8step.json`。
 
+**Apply VDN-H3 Advanced** —— 包含基础节点全部功能,另加面向实验者的:
+
+| 输入 | 含义 |
+|---|---|
+| `stage_b_strength` / `turbo_strength` | 两套适配器各自独立强度(基础节点是单一全局强度) |
+| `window_radius`、`window_chunk` | 偏离训练窗口 c=5 r=1(消融实验) |
+| `anchor_frames` | `both` / `columns` / `rows` / `none`(训练值 `both`) |
+| `text_state` | 初始化时把提示词写入线性分支状态(训练值:开) |
+| `linear_branch` | 关 = 仅窗口消融(调试;长片段将失去全部长距离上下文) |
+| `fast_kernels` | torch.compile 把分支的 RMSNorm+门控尾声融合为单内核(数学相同;编译失败自动回退 eager) |
+
+消融输入偏离检查点训练规格时会在控制台警告;全部默认值精确复现发布模型。
+
 ## 注意力后端与叠加
 
 VDN 的窗口 softmax 始终使用精确 SDPA —— 这是有意为之:让窗口经过量化后端

@@ -190,10 +190,11 @@ def make_vdn_forward(attn, state, block_index):
         q_raw = q.view(s, heads, head_dim)
         k_raw = k.view(s, heads, head_dim)
 
-        branch_active = not lay.full_cover
+        window_active = not lay.full_cover
+        linear_active = window_active and cfg.get("linear_enabled", True)
         q_raw_video = k_raw_video = v_video = None
         text_x = text_k_raw = text_v_raw = None
-        if branch_active:
+        if linear_active:
             v_s, e_s = lay.video_start, lay.video_end
             q_raw_video = q_raw[v_s:e_s].clone()
             k_raw_video = k_raw[v_s:e_s].clone()
@@ -219,7 +220,7 @@ def make_vdn_forward(attn, state, block_index):
             k = k_norm(k_raw)
         v = v.clone()
 
-        if branch_active:
+        if window_active:
             if getattr(state, "softmax_backend", "grouped") == "flex":
                 from vdn_h3.window import window_softmax_flex
                 try:
@@ -261,7 +262,7 @@ def make_vdn_forward(attn, state, block_index):
         out = out_proj(flat.type_as(x))
         del softmax_out
 
-        if branch_active:
+        if linear_active:
             readout = branch.readout(
                 w, x[lay.video_start:lay.video_end], q_raw_video, k_raw_video,
                 v_video, lay.num_frames, lay.tokens_per_frame, lay.bounds,

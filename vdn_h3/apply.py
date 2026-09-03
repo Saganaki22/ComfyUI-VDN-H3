@@ -64,13 +64,16 @@ def _int8_fused_fc2(dm, modules):
 
 def apply_adapters(new_model, converted_by_name, strength, mode, verbose=False):
     """converted_by_name: {adapter_name: {comfy_module: (A, B, scale)}}. Bypass is the
-    sharp default; merge is the low-VRAM/quantized-friendly path. Returns a report
-    dict."""
+    sharp default; merge is the low-VRAM/quantized-friendly path. `strength` is a
+    float applied to every adapter, or {adapter_name: float} for per-adapter
+    control (missing names default to 1.0). Returns a report dict."""
+    per_name = strength if isinstance(strength, dict) else None
     dm = new_model.get_model_object("diffusion_model")
     pruned = getattr(dm, "use_adaln_curves", False)
     report = {}
     all_hooks = []
     for name, converted in converted_by_name.items():
+        s = per_name.get(name, 1.0) if per_name is not None else strength
         modules = sorted(converted.keys())
         lora = {}
         for path, (a, b, scale) in converted.items():
@@ -82,7 +85,7 @@ def apply_adapters(new_model, converted_by_name, strength, mode, verbose=False):
         sd_keys = set(new_model.model.state_dict().keys())
 
         if mode == "merge":
-            n = len(new_model.add_patches(loaded, strength))
+            n = len(new_model.add_patches(loaded, s))
             report[name] = f"{n} weights merged"
             continue
 
@@ -93,18 +96,18 @@ def apply_adapters(new_model, converted_by_name, strength, mode, verbose=False):
 
         n = 0
         if bypass_mods:
-            n += _bypass(new_model, loaded, key_map, bypass_mods, sd_keys, strength,
+            n += _bypass(new_model, loaded, key_map, bypass_mods, sd_keys, s,
                          all_hooks)
         if fc2_fused:
             n += len(new_model.add_patches(
                 {k: v for k, v in loaded.items()
-                 if k in {key_map[m] for m in fc2_fused}}, strength))
+                 if k in {key_map[m] for m in fc2_fused}}, s))
         if adaln:
             if pruned:
-                _inject_adaln_egrid(new_model, dm, lora, adaln, strength)
+                _inject_adaln_egrid(new_model, dm, lora, adaln, s)
                 n += len(adaln)
             else:
-                n += _bypass(new_model, loaded, key_map, adaln, sd_keys, strength,
+                n += _bypass(new_model, loaded, key_map, adaln, sd_keys, s,
                              all_hooks)
         report[name] = (f"{n} adapters ({len(bypass_mods)} bypass, "
                         f"{len(fc2_fused)} int8-fc2 merged, {len(adaln)} adaln)")
@@ -263,3 +266,4 @@ def _inject_adaln_egrid(new_model, dm, lora, adaln_modules, strength):
         new_model.add_object_patch(
             key + ".forward",
             _make_adaln_forward(new_model.get_model_object(key), a, b, shared, tt, e))
+
