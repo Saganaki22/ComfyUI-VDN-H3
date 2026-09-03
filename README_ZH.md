@@ -1,5 +1,7 @@
 # ComfyUI-VDN-H3 — 面向 MiniMax-H3 的 VDN-H3(Video Delta Net)混合注意力
 
+<img width="1303" height="802" alt="image" src="https://github.com/user-attachments/assets/7cca68bd-2795-4b3f-847c-d7f918ce4d44" />
+
 **[English](README.md)** | 中文
 
 将 Video Delta Net 混合注意力以原生 ComfyUI 节点的形式带入 MiniMax-H3:邻近帧
@@ -12,6 +14,16 @@ Attention** 线性分支,把平方级的长距离注意力替换为常数成本�
 
 本包是**移植而非分叉**:在 ComfyUI 原生 MiniMax-H3 模型上以运行时模型补丁的
 方式复现官方混合注意力数学,不修改任何 ComfyUI 核心文件。
+
+**这个仓库存在的意义(以及它不是什么)。** 官方 VDN-H3 发布版面向数据中心技术栈:8× B200 GPU 的 Ulysses 序列并行,以及仅支持 Hopper 和数据中心级 Blackwell 的 FlashAttention-4 内核 —— 消费级 Blackwell(sm_120)不受支持,也没有 Windows 构建。上游还使用了 FP8 线性层和定制融合 Triton 内核;本移植用可在任何 ComfyUI 环境运行的纯 PyTorch 等价实现替代了这些。
+
+你能得到:相同的发布检查点与相同的架构 —— 窗口 softmax + Video Delta Attention 线性分支,并对官方实现做了单元测试验证 —— 零新增依赖。8 步蒸馏模型、相对稠密 H3 近乎无损的质量,以及随片段长度线性(而非平方)增长的注意力成本 —— 视频越长,收益越大。
+
+你得不到:头条数字。官方 74.5 倍来自 8 卡并行 + FA4 + FP8 + 8 步蒸馏的组合;上游自己的单卡实测为 50 步约 2.6 倍,而本移植的通用内核略低于此(RTX 5090、1280×736 / 145 帧实测约 17 秒/it —— 见 Benchmarks.md)。想在自己的硬件上试验这套架构,这就是为你准备的;想要实时流式生成的数字,那需要他们的 B200 集群。
+
+| LightXv2 4-Step Turbo v1.1, CK, Sol-attn, er_sde / beta —— 8 步,1280x736,1:24 | VDN-H3 Turbo er_sde / beta —— 8 步,1280x736,2:04 |
+|:---:|:---:|
+| <video src="https://github.com/user-attachments/assets/b0373566-fc78-4616-b591-13462c4b50e6" controls></video> | <video src="https://github.com/user-attachments/assets/89cc7155-ca89-459e-9996-5b5f6bfcd284" controls></video> |
 
 ## 安装
 
