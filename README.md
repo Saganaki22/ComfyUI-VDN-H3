@@ -1,6 +1,8 @@
 # ComfyUI-VDN-H3 — VDN-H3 (Video Delta Net) for MiniMax-H3
 
-<img width="1303" height="802" alt="image" src="https://github.com/user-attachments/assets/7cca68bd-2795-4b3f-847c-d7f918ce4d44" />
+
+<img width="1039" height="505" alt="image" src="https://github.com/user-attachments/assets/ab4c1691-bff5-46fe-8b3e-635429b0700f" />
+
 
 
 **English** | [中文](README_ZH.md)
@@ -25,9 +27,11 @@ What you get: the same released checkpoints and the same architecture — window
 
 What you don't get: the headline numbers. The official 74.5× figure combines 8-GPU parallelism, FA4, FP8, and 8-step distillation; upstream's own single-GPU measurement is ~2.6× at 50 steps, and this port's portable kernels land somewhat under that (measured ~17 s/it at 1280×736 / 145 frames on an RTX 5090 — see Benchmarks.md). If you want to experiment with the architecture on your own hardware, this is for you; if you want the streaming-real-time numbers, that takes their B200 cluster.
 
-| CK, Sol-attn, res_multi / simple — 20 Steps, 1280x736, 3:05 | LightXv2 4-Step Turbo v1.1, CK, Sol-attn, er_sde / beta — 8 steps, 1280x736, 1:24 | VDN-H3 Turbo er_sde / beta — 8 steps, 1280x736, 2:04 |
-|:---:|:---:|:---:|
-| <video src="https://github.com/user-attachments/assets/7120657d-af61-4414-b621-53b39208ffe0" controls></video> | <video src="https://github.com/user-attachments/assets/b0373566-fc78-4616-b591-13462c4b50e6" controls></video> | <video src="https://github.com/user-attachments/assets/89cc7155-ca89-459e-9996-5b5f6bfcd284" controls></video> |
+| CK, Sol-attn, res_multi / simple — 20 Steps, 1280x736, 3:05 | LightXv2 4-Step Turbo v1.1, CK, Sol-attn, er_sde / beta — 8 steps, 1280x736, 1:24 | VDN-H3 Turbo er_sde / beta — 8 steps, 1280x736, 2:04 | VDN-H3 advanced fast_kernels Turbo er_sde / beta — 8 steps, 1280x736, 1:13 |
+|:---:|:---:|:---:|:---:|
+| <video src="https://github.com/user-attachments/assets/7120657d-af61-4414-b621-53b39208ffe0" controls></video> | <video src="https://github.com/user-attachments/assets/b0373566-fc78-4616-b591-13462c4b50e6" controls></video> | <video src="https://github.com/user-attachments/assets/89cc7155-ca89-459e-9996-5b5f6bfcd284" controls></video> | <video src="https://github.com/user-attachments/assets/5cc9906e-acec-4c61-a3b9-17c79153945b" controls></video> |
+
+
 
 ### Same seed 
 `981445682258077`
