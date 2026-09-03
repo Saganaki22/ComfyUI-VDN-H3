@@ -69,7 +69,7 @@ def apply_adapters(new_model, converted_by_name, strength, mode, verbose=False):
     control (missing names default to 1.0). Returns a report dict."""
     per_name = strength if isinstance(strength, dict) else None
     dm = new_model.get_model_object("diffusion_model")
-    pruned = getattr(dm, "use_adaln_curves", False)
+    pruned = _is_pruned_base(dm)
     report = {}
     all_hooks = []
     for name, converted in converted_by_name.items():
@@ -104,6 +104,20 @@ def apply_adapters(new_model, converted_by_name, strength, mode, verbose=False):
                  if k in {key_map[m] for m in fc2_fused}}, s))
         if adaln:
             if pruned:
+                grid_path = os.path.abspath(_TURBO_GRID)
+                if not os.path.exists(grid_path):
+                    # Curve bases cannot take the adaln deltas through the normal
+                    # paths (that is what the per-block '[96768, 8]' reshape errors
+                    # were); skipping them is near-visual-neutral per community
+                    # testing. One warning instead of 50 ERROR lines.
+                    _log.warning("[vdn] pruned base: %d adaln adapters skipped "
+                                 "(needs the silu-temb grid from the "
+                                 "ComfyUI-MiniMax-H3-Turbo node at %s)",
+                                 len(adaln), grid_path)
+                    report[name] = (f"{n} adapters ({len(bypass_mods)} bypass, "
+                                    f"{len(fc2_fused)} int8-fc2 merged, "
+                                    f"{len(adaln)} adaln SKIPPED)")
+                    continue
                 _inject_adaln_egrid(new_model, dm, lora, adaln, s)
                 n += len(adaln)
             else:
@@ -117,6 +131,20 @@ def apply_adapters(new_model, converted_by_name, strength, mode, verbose=False):
 
 def _is_adaln(module):
     return module.endswith(".adaln_proj.linear")
+
+
+def _is_pruned_base(dm):
+    """Curve/pruned bases collapse adaln_proj.linear to a tiny t-feature input
+    (the [96768, 8] weights); the trained weight takes the full silu(t_emb)
+    width. The model flag alone missed some pruned checkpoints (issues #3/#5),
+    so the weight shape is the reliable tell."""
+    if getattr(dm, "use_adaln_curves", False):
+        return True
+    try:
+        w = comfy.utils.get_attr(dm, "blocks.0.adaln_proj.linear.weight")
+        return w.dim() == 2 and w.shape[-1] < 64
+    except Exception:
+        return False
 
 
 def _bypass(new_model, loaded, key_map, modules, sd_keys, strength, hooks):

@@ -52,7 +52,7 @@ git clone https://github.com/Saganaki22/ComfyUI-VDN-H3
 2. Download the VDN checkpoint stage you want into `ComfyUI/models/vdn/`:
 
 ```bash
-hf download OpenVDN/vdn-minimax-h3 stage-dmd-step-250 --local-dir <ComfyUI>/models/vdn
+hf download OpenVDN/vdn-minimax-h3 --include "stage-dmd-step-250/*" --local-dir <ComfyUI>/models/vdn
 ```
 
 Keep the release directory layout intact (`model_spec.json`, `linear_branch/`,
@@ -215,3 +215,4 @@ If you use VDN-H3, cite the authors:
   url    = {https://openvdn.github.io/}
 }
 ```
+

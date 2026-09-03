@@ -45,7 +45,7 @@ git clone https://github.com/Saganaki22/ComfyUI-VDN-H3
 2. 将需要的 VDN 检查点下载到 `ComfyUI/models/vdn/`:
 
 ```bash
-hf download OpenVDN/vdn-minimax-h3 stage-dmd-step-250 --local-dir <ComfyUI>/models/vdn
+hf download OpenVDN/vdn-minimax-h3 --include "stage-dmd-step-250/*" --local-dir <ComfyUI>/models/vdn
 ```
 
 请保持发布目录结构不变(`model_spec.json`、`linear_branch/`、`adapters/`)。
@@ -193,3 +193,4 @@ fp8 线性层 + FA4/flex 内核的组合。本移植的单卡收益应对标约 
   url    = {https://openvdn.github.io/}
 }
 ```
+

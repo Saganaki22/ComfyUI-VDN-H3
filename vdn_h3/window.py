@@ -118,7 +118,14 @@ def _sdpa(q_rows, k_rows, v_rows, scale, transformer_options=None):
             v_rows.reshape(1, -1, heads * dim),
             heads, transformer_options=transformer_options)
         return out.reshape(rows, heads, dim)
-    attended = F.scaled_dot_product_attention(
+    # No override: still dispatch through comfy's backend-priority chain
+    # (flash -> cuDNN -> mem-efficient), since Windows torch builds ship without
+    # the flash kernel and raw F.sdpa lands on the slow mem-efficient backend.
+    try:
+        from comfy.ops import scaled_dot_product_attention as comfy_sdpa
+    except ImportError:                      # unit tests run without comfy on path
+        comfy_sdpa = F.scaled_dot_product_attention
+    attended = comfy_sdpa(
         q_rows.permute(1, 0, 2).unsqueeze(0),
         k_rows.permute(1, 0, 2).unsqueeze(0),
         v_rows.permute(1, 0, 2).unsqueeze(0), scale=scale)
