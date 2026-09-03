@@ -99,11 +99,16 @@ the K/V short conv, output gates, and both LoRA adapters.
 
 **ComfyUI-specific adaptations:**
 
-- The windowed softmax runs as one dense SDPA per chunk-group instead of
+- The default windowed softmax runs as one dense SDPA per chunk-group instead of
   block-sparse FlexAttention. Same partition, same math; needs no Triton and no
-  torch.compile. The official FA4/flex path is faster on long sequences.
+  torch.compile. A FlexAttention + BlockMask path IS included (opt-in via
+  `attention_backend: flex`) and compiled fine on triton-windows — measured
+  parity with grouped on RTX 5090 at 34.5k tokens (see Benchmarks.md), so grouped
+  stays the default. The official FA4 backend is faster still but needs
+  Linux + datacenter Blackwell.
 - Eager pointwise ops instead of the official Triton/compiled fusions (temporal
-  conv, RMSNorm epilogue, gather). Correct, somewhat slower.
+  conv, RMSNorm epilogue, gather). Correct, somewhat slower; the scan's kernel
+  launches are the remaining optimization target (CUDA-graph via torch.compile).
 - LoRA applied through ComfyUI's bypass/merge machinery (int8-fused `fc2` weights
   route through merge automatically; pruned/curve bases get the e-grid adaln
   re-injection).
@@ -150,21 +155,6 @@ architectural figure, scaled by which attention backend your windows dispatch to
 - **Video renders but looks like the plain model** — check `verbose` and look for
   `[vdn] layout:` in the console; on clips with <= 15 latent frames the window
   covers everything and VDN correctly falls back to dense attention.
-
-## Files
-
-```
-__init__.py            node registration
-vdn_h3/nodes.py        ApplyVDNH3 node
-vdn_h3/spec.py         checkpoint discovery/loading/validation (models/vdn)
-vdn_h3/hybrid.py       patched attention forward + packed-layout wrapper
-vdn_h3/branch.py       Video Delta Attention branch (official port)
-vdn_h3/window.py       chunk-grouped windowed softmax + FlexAttention path
-vdn_h3/adapters.py     diffusers->ComfyUI LoRA key/fold conversion
-vdn_h3/apply.py        bypass/merge application, int8-fc2 + pruned-adaln handling
-tests/                 numerical verification vs reference oracles
-example_workflows/     drag-in t2v workflow
-```
 
 ## License & citation
 

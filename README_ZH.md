@@ -92,12 +92,15 @@ softmax 窗口与锚点帧(发布规格 `radius=1, chunk=5, anchor_frames=both`)
 
 **ComfyUI 特有适配:**
 
-- 窗口 softmax 按 chunk 分组,每组一次稠密 SDPA(可选 flex 走单内核
-  FlexAttention),而非官方的 block-sparse FlexAttention/FA4。分区与数学完全
-  一致;无需 Triton 或 torch.compile(grouped 路径)。官方 FA4/flex 路径在长
-  序列上更快。
+- 窗口 softmax 默认按 chunk 分组、每组一次稠密 SDPA,而非官方的 block-sparse
+  FlexAttention。分区与数学完全一致;无需 Triton 或 torch.compile。**已内置**
+  FlexAttention + BlockMask 路径(经 `attention_backend: flex` 启用),在
+  triton-windows 上编译运行正常 —— RTX 5090、34.5k tokens 下与 grouped 实测
+  持平(见 Benchmarks.md),故 grouped 仍为默认。官方 FA4 后端更快,但需要
+  Linux + 数据中心级 Blackwell。
 - 官方 Triton/编译融合点(时序卷积、RMSNorm 尾声、gather)在此为 eager
-  实现。正确但略慢。
+  实现。正确但略慢;扫描循环的内核启动开销是下一个优化目标
+  (torch.compile CUDA graph)。
 - LoRA 通过 ComfyUI 的 bypass/merge 机制应用(int8 融合的 `fc2` 自动走 merge;
   剪枝基座获得 e-grid adaln 重注入)。
 - 打包序列几何直接读取 ComfyUI 自带的 `PackedLayout`,各条件变体
@@ -137,21 +140,6 @@ RTX 5090 实测(int8 convrot 基座,`stream` 模式,sage2 补丁):1280x736、
   两种步数混用会降低质量。
 - **能出片但像纯模型** —— 打开 `verbose`,在控制台找 `[vdn] layout:`;当片段
   的潜在帧数 ≤ 15 时窗口已覆盖全部,VDN 会正确地回退到稠密注意力。
-
-## 文件结构
-
-```
-__init__.py            节点注册
-vdn_h3/nodes.py        ApplyVDNH3 节点
-vdn_h3/spec.py         检查点发现/加载/校验(models/vdn)
-vdn_h3/hybrid.py       注意力前向补丁 + 打包布局包装器
-vdn_h3/branch.py       Video Delta Attention 分支(官方移植)
-vdn_h3/window.py       chunk 分组窗口 softmax + FlexAttention 路径
-vdn_h3/adapters.py     diffusers->ComfyUI LoRA 键/折叠转换
-vdn_h3/apply.py        bypass/merge 应用,int8-fc2 与剪枝基座 adaln 处理
-tests/                 对照参考实现的数值验证
-example_workflows/     可直接拖入的 t2v 工作流
-```
 
 ## 许可证与引用
 
