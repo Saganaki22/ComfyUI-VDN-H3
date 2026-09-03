@@ -59,11 +59,13 @@ samplers, VAE decode and video/audio output nodes are unchanged. Example workflo
 
 ## Attention backends and stacking
 
-VDN's windowed softmax routes through ComfyUI's attention dispatch, so any
-`optimized_attention_override` on the model (a SageAttention patch, kitchen-int8,
-KJNodes) applies to VDN's window groups the same way it applies to the base
-model's attention. The delta-rule branch never calls softmax kernels and is
-unaffected by backend patches.
+VDN's windowed softmax always runs exact SDPA — this is deliberate: routing the
+windows through quantized backends (sage/kitchen int8) measurably softens
+output, and the released model validated exact local attention. Backend override
+patches (SageAttention, kitchen-int8, KJNodes) still apply to the base model's
+own attention (text refiner, and the dense fallback on very short clips). The
+delta-rule branch never calls softmax kernels and is unaffected by backend
+patches.
 
 **Do not stack the "MiniMax H3 Scheduled Sol Attention" patch with this node.**
 It replaces `blocks.*.attn.forward` — the same path VDN owns — so wherever SOL

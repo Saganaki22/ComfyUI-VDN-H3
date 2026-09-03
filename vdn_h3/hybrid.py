@@ -233,11 +233,15 @@ def make_vdn_forward(attn, state, block_index):
                                  "to grouped SDPA", e)
             if getattr(state, "softmax_backend", "grouped") != "flex":
                 from vdn_h3.window import window_softmax_grouped
+                # Windows always run exact SDPA: routing them through the model's
+                # optimized_attention_override (sage/kitchen int8) measurably
+                # softens output -- the released model validated exact local
+                # attention. Overrides still apply to the base model's own
+                # attention (text refiner, full-cover fallback).
                 softmax_out = window_softmax_grouped(
                     q, k, v, lay.video_start, lay.video_end, lay.num_frames,
                     lay.tokens_per_frame, lay.bounds, head_dim ** -0.5,
-                    anchor_frames=cfg["anchor_frames"],
-                    transformer_options=transformer_options)
+                    anchor_frames=cfg["anchor_frames"])
         else:
             q = AttentionTensorContainer(q.transpose(0, 1).unsqueeze(0))
             k = AttentionTensorContainer(k.transpose(0, 1).unsqueeze(0))

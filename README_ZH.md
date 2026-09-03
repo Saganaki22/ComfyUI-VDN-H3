@@ -55,10 +55,11 @@ safetensors)运行官方数学,不需要 Triton、flash-attn-4、CUDA 编译或
 
 ## 注意力后端与叠加
 
-VDN 的窗口 softmax 走 ComfyUI 的注意力分发,因此模型上的任何
-`optimized_attention_override`(SageAttention 补丁、kitchen-int8、KJNodes)
-都会像作用于基座模型一样作用于 VDN 的窗口组。线性分支不经过 softmax 内核,
-不受后端补丁影响。
+VDN 的窗口 softmax 始终使用精确 SDPA —— 这是有意为之:让窗口经过量化后端
+(sage/kitchen int8)会明显降低输出质量,而发布模型验证的是精确的局部注意力。
+后端 override 补丁(SageAttention、kitchen-int8、KJNodes)仍作用于基座模型
+自身的注意力(文本精炼器,以及极短片段的稠密回退)。线性分支不经过 softmax
+内核,不受后端补丁影响。
 
 **请勿将 "MiniMax H3 Scheduled Sol Attention" 补丁与本节点叠加。** 它替换的
 `blocks.*.attn.forward` 与 VDN 是同一路径 —— 凡由 SOL 处理的调用,VDN 的线性
