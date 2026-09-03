@@ -20,9 +20,7 @@
 ~6 dense SDPA calls per block per step at this length (interior chunks share one
 window), so the flex kernel's fusion buys nothing yet and carries compile cost.
 flex stays available as an opt-in for much longer clips; `grouped` remains the
-default. The dominant remaining cost is the eager delta-branch scan
-(~120k small kernel launches per render) — CUDA-graphing it is the next
-optimization target.
+default.
 
 ## 512x320, 56 frames (F=17, S=160, seq 2,939) — smoke
 

@@ -132,13 +132,17 @@ block in `stream` mode, so the working-set increase is roughly one block's ~86 M
 plus transient raw q/k copies inside attention of about `2 x seq_len x 7168 x 2`
 bytes).
 
-Measured on RTX 5090 (int8 convrot base, `stream` mode, sage2 patch): 640x384,
-37 frames, 8 steps = ~20 s/it (~160 s total) including audio. Reference
+Measured on RTX 5090 (int8 convrot base, `stream` mode, sage2 patch): 1280x736,
+145 frames, 8 steps, euler/simple, seed 42, ~17 s/it (~2:15 sampling), audio
+included. `grouped` vs `flex` attention backends measured parity at 34.5k tokens
+— the grouped path issues only ~6 dense SDPA calls per block per step at this
+length, so flex's fusion buys nothing yet; grouped stays the default. Reference
 points from the official VDN report: a single B200 runs the dense 50-step model
 in 13.95 min and the optimized VDN-H3 in 5.34 min (~2.6x from the hybrid alone);
 the headline 74.5x combines 8xB200 parallelism, 8-step distillation, fp8 linears,
 and FA4/flex kernels. Expect single-GPU gains on this port to track the ~2.6x
 architectural figure, scaled by which attention backend your windows dispatch to.
+Full measurement data and verification status: [Benchmarks.md](Benchmarks.md).
 
 ## Troubleshooting
 
