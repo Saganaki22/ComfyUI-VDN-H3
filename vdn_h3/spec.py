@@ -41,40 +41,92 @@ def _branch_file(path):
     return plain
 
 
-def _restore_quantized(sd):
-    """Rebuild Comfy Kitchen QuantizedTensors from comfy_quant metadata keys.
+def _read_header(path):
+    """The safetensors JSON header: {key: {"dtype": ..., "shape": [...]}}."""
+    import struct
+    with open(path, "rb") as f:
+        n = struct.unpack("<Q", f.read(8))[0]
+        return json.loads(f.read(n))
 
-    Mirrors ComfyUI's own int8-convrot model format (see comfy/ops.py: the
-    <layer>.comfy_quant JSON + <layer>.weight_scale companion tensors): the
-    weights stay QuantizedTensor / TensorWiseINT8Layout -- nothing is
-    dequantized at load time. orig_dtype is bf16: the branch always computes
-    in bf16 and the format does not carry it.
-    """
-    if not _KITCHEN_OK:
-        return sd
-    conf_keys = [k for k in sd if k.endswith(".comfy_quant")]
-    if not conf_keys:
-        return sd
-    for conf_key in conf_keys:
-        conf = json.loads(bytes(sd[conf_key].tolist()).decode("utf-8"))
-        if conf.get("format") != "int8_tensorwise":
-            raise ValueError(f"{conf_key}: unsupported quantization format "
-                             f"{conf.get('format')!r}")
-        layer = conf_key[: -len(".comfy_quant")]
-        wkey = layer + ".weight"
-        skey = wkey + "_scale"
-        if wkey not in sd or skey not in sd:
-            raise ValueError(f"{conf_key}: missing {wkey} or {skey}")
-        qdata = sd.pop(wkey)
-        scale = sd.pop(skey)
-        params = TensorWiseINT8Layout.Params(
-            scale=scale, orig_dtype=torch.bfloat16,
-            orig_shape=tuple(qdata.shape), is_weight=True,
-            convrot=bool(conf.get("convrot", False)),
-            convrot_groupsize=int(conf.get("convrot_groupsize", 256)))
-        sd[wkey] = QuantizedTensor(qdata, "TensorWiseINT8Layout", params)
-        del sd[conf_key]
-    return sd
+
+SAFETENSORS_DTYPES = {"BF16": torch.bfloat16, "F16": torch.float16,
+                      "F32": torch.float32, "I8": torch.int8,
+                      "U8": torch.uint8}
+
+# One mmap handle per (file, device). The OS page cache manages residency, so
+# branch weights are read from disk on demand and never accumulated as owned
+# CPU tensors (the same disk-backed philosophy as comfy's --fast-disk).
+_HANDLES = {}
+
+
+def _handle(path, device):
+    h = _HANDLES.get((path, device))
+    if h is None:
+        from safetensors import safe_open
+        h = safe_open(path, framework="pt", device=device)
+        _HANDLES[(path, device)] = h
+    return h
+
+
+class LazyBranchTensor:
+    """A branch weight kept on disk: reads straight from the safetensors mmap to
+    the target device on resolve(). Per-block stream reads replace the old
+    full-branch load_file() into committed CPU RAM."""
+
+    __slots__ = ("_path", "_key", "_scale_key", "_conf", "shape", "dtype")
+
+    def __init__(self, path, key, shape, dtype, scale_key=None, conf=None):
+        self._path = path
+        self._key = key
+        self._scale_key = scale_key
+        self._conf = conf
+        self.shape = shape
+        self.dtype = dtype
+
+    def resolve(self, device, dtype=None):
+        h = _handle(self._path, str(device))
+        if self._conf is None:
+            t = h.get_tensor(self._key)
+            return t if dtype is None or t.dtype == dtype else t.to(dtype)
+        qdata = h.get_tensor(self._key)
+        scale = h.get_tensor(self._scale_key)
+        return QuantizedTensor(
+            qdata, "TensorWiseINT8Layout",
+            TensorWiseINT8Layout.Params(
+                scale=scale, orig_dtype=dtype or torch.bfloat16,
+                orig_shape=tuple(self.shape), is_weight=True,
+                convrot=bool(self._conf.get("convrot", False)),
+                convrot_groupsize=int(self._conf.get("convrot_groupsize", 256))))
+
+
+def _lazy_branch_sd(path):
+    """Descriptors for every tensor in a branch file, quantization included."""
+    header = _read_header(path)
+    conf_keys = [k for k in header if k.endswith(".comfy_quant")]
+    confs = {}
+    if conf_keys:
+        h = _handle(path, "cpu")
+        for k in conf_keys:
+            layer = k[: -len(".comfy_quant")]
+            confs[layer] = json.loads(
+                bytes(h.get_tensor(k).tolist()).decode("utf-8"))
+    out = {}
+    for key, meta in header.items():
+        if key == "__metadata__" or key.endswith(".comfy_quant"):
+            continue
+        if key.endswith(".weight_scale") \
+                and key[: -len(".weight_scale")] in confs:
+            continue
+        layer = key[: -len(".weight")] if key.endswith(".weight") else None
+        conf = confs.get(layer) if layer else None
+        scale_key = key + "_scale" if conf else None
+        if conf and scale_key not in header:
+            conf = None
+            scale_key = None
+        out[key] = LazyBranchTensor(
+            path, key, torch.Size(meta["shape"]),
+            SAFETENSORS_DTYPES.get(meta["dtype"]), scale_key, conf)
+    return out
 
 
 def register_folder():
@@ -178,7 +230,7 @@ def load_vdn_checkpoint(path):
     spec = _read_json(spec_path)
     cfg = transform_config(spec)
 
-    branch_sd = _restore_quantized(load_file(branch_path))
+    branch_sd = _lazy_branch_sd(branch_path)
     num_blocks = 0
     for key in branch_sd:
         if ".attn.to_out_linear.weight" in key:
@@ -195,7 +247,7 @@ def load_vdn_checkpoint(path):
             # (...attn.linear_attention.alpha.A_log) and the branch reads bare names
             if name.startswith("linear_attention."):
                 name = name[len("linear_attention."):]
-            w[name] = tensor.contiguous()
+            w[name] = tensor
         missing = {"to_out_linear.weight", "beta_proj.weight", "norm.weight",
                    "alpha.A_log", "alpha.dt_bias", "alpha.down.weight",
                    "alpha.up.weight", "output_gate.down.weight",
@@ -204,7 +256,6 @@ def load_vdn_checkpoint(path):
             raise ValueError(f"block {i} of {path} is missing branch tensors: "
                              f"{sorted(missing)}")
         branches.append(w)
-    del branch_sd
 
     adapters = {}
     adapters_root = os.path.join(path, "adapters")
