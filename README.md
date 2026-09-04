@@ -304,6 +304,9 @@ overlap.
   forwards. The node handles this for you: applying VDN switches comfy's
   compiler off while a VDN model is loaded, and hands it back the moment the
   model is unloaded, so non-VDN workflows keep it (console lines mark both).
+  One caveat: if a non-VDN workflow runs while the VDN model is still loaded
+  in memory (no unload in between), the compiler stays off for that run too —
+  unload first to hand it back. Restarting comfy also resets it.
   Manual equivalents: launch comfy with `--disable-comfy-compiler`, or use a
   comfy build older than 2026-09-04.
 - **OOM** — keep `branch_weights: auto` (default; it picks `stream` under memory
