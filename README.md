@@ -262,7 +262,10 @@ Full measurement data and verification status: [Benchmarks.md](Benchmarks.md).
   model). Load the matching MiniMax-H3 base.
 - **"This MODEL already has VDN-H3 applied"** — chain the node once.
 - **OOM** — use `branch_weights: stream` (default), `lora_mode: merge`, shorter
-  clips, smaller resolution.
+  clips, smaller resolution. **Cancelling mid-run:** VDN drops its own GPU cache
+  on cancel so reruns start clean; if the *base model* itself was pushed
+  host-side by VRAM pressure, free/unload it once (Manager → Free, an Unload
+  node, or `POST /free`) — that residency belongs to comfy, not the node.
 - **Wrong-looking motion at 8 steps** — make sure `apply_turbo_adapter` is ON with
   8 steps, or OFF with ~50 steps; mixing the two schedules degrades output.
 - **Video renders but looks like the plain model** — check `verbose` and look for

@@ -219,7 +219,9 @@ fp8 线性层 + FA4/flex 内核的组合。本移植的单卡收益应对标约 
   MiniMax-H3 基座。
 - **"This MODEL already has VDN-H3 applied"** —— 该节点只能串接一次。
 - **OOM** —— 用 `branch_weights: stream`(默认)、`lora_mode: merge`、更短的
-  片段或更小的分辨率。
+  片段或更小的分辨率。**中途取消**:VDN 会在取消时清掉自己的 GPU 缓存,让重跑
+  从干净状态开始;如果是基座模型因显存压力被挤到内存,重跑前手动释放一次
+  (Manager 的 Free、Unload 节点或 `POST /free`)——那部分驻留属于 comfy,不归本节点管。
 - **8 步下动作异常** —— 确认 8 步配 `apply_turbo_adapter` 开,或约 50 步配关;
   两种步数混用会降低质量。
 - **能出片但像纯模型** —— 打开 `verbose`,在控制台找 `[vdn] layout:`;当片段

@@ -137,6 +137,14 @@ def make_layout_wrapper(state):
               f"window {'dense (full cover)' if lay.full_cover else lay.bounds[0]}")
         try:
             return executor(*args, **kwargs)
+        except comfy.model_management.InterruptProcessingException:
+            # A cancelled mid-run leaves this node's GPU cache behind and the
+            # CUDA allocator pool fragmented; drop everything the node owns so
+            # the next run starts clean instead of OOM-ing on its first big
+            # activation. (The base model's own residency is comfy's to manage.)
+            state._gpu_cache.clear()
+            torch.cuda.empty_cache()
+            raise
         finally:
             state.layout = None
 
