@@ -161,14 +161,22 @@ base (`h3-base/`) in the HF repo is *not* needed.
 **Tested and working with both the `fl2v` (fl2va) and `ref2v` (ref2va) MiniMax-H3
 base models.**
 
-**Pre-quantized INT8 stage available:** a ready-made INT8 ConvRot version of the
-8-step stage (identical outputs, branch 4.3 -> 2.2 GB, ~4.7 GB lower peak VRAM
-while loading) is at
-[drbaph/vdn-minimax-h3-int8-convrot-comfyui](https://huggingface.co/drbaph/vdn-minimax-h3-int8-convrot-comfyui) —
-download it into `models/vdn/` (e.g. `hf download drbaph/vdn-minimax-h3-int8-convrot-comfyui --local-dir models/vdn/vdn-minimax-h3-int8-convrot-comfyui`);
-the folder name becomes the `vdn_checkpoint` entry. Loading
-pre-quantized stages requires v1.3.0+; you can also quantize any stage
-yourself with `tools/quantize_vdn_branch_int8.py`.
+Download the VDN checkpoint stage you want into `ComfyUI/models/vdn/`:
+
+```bash
+hf download OpenVDN/vdn-minimax-h3 --include "stage-dmd-step-250/*" --local-dir <ComfyUI>/models/vdn
+```
+
+Or, for the pre-quantized **INT8 ConvRot** version of the 8-step stage
+(identical output, branch 4.3 -> 2.2 GB, ~4.7 GB lower peak VRAM while loading,
+requires v1.3.0+):
+
+```bash
+hf download drbaph/vdn-minimax-h3-int8-convrot-comfyui --local-dir <ComfyUI>/models/vdn/vdn-minimax-h3-int8-convrot-comfyui
+```
+
+The folder name becomes the `vdn_checkpoint` entry. You can also quantize any
+stage yourself with `tools/quantize_vdn_branch_int8.py`.
 
 ### BF16 vs INT8 ConvRot — A/B (same seed & settings)
 

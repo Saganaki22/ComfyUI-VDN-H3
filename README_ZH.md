@@ -144,12 +144,20 @@ VDN 发布版**不包含基座权重** —— 只有分支与 LoRA 适配器,运
 
 **已在 `fl2v`(fl2va)与 `ref2v`(ref2va)两种 MiniMax-H3 基座模型上测试,均可正常工作。**
 
-**提供预量化的 INT8 stage:** 8 步 stage 的 INT8 ConvRot 版本(输出一致,分支
-4.3 -> 2.2 GB,加载峰值显存低约 4.7 GB)已发布于
-[drbaph/vdn-minimax-h3-int8-convrot-comfyui](https://huggingface.co/drbaph/vdn-minimax-h3-int8-convrot-comfyui) ——
-下载到 `models/vdn/`(如 `hf download drbaph/vdn-minimax-h3-int8-convrot-comfyui --local-dir models/vdn/vdn-minimax-h3-int8-convrot-comfyui`);
-文件夹名即为 `vdn_checkpoint` 中的选项。加载预量化 stage 需要 v1.3.0+;
-也可以用 `tools/quantize_vdn_branch_int8.py` 自行量化任意 stage。
+下载你想要的 VDN 检查点 stage 到 `ComfyUI/models/vdn/`:
+
+```bash
+hf download OpenVDN/vdn-minimax-h3 --include "stage-dmd-step-250/*" --local-dir <ComfyUI>/models/vdn
+```
+
+或者使用 8 步 stage 的预量化 **INT8 ConvRot** 版本(输出一致,分支 4.3 -> 2.2 GB,
+加载峰值显存低约 4.7 GB,需要 v1.3.0+):
+
+```bash
+hf download drbaph/vdn-minimax-h3-int8-convrot-comfyui --local-dir <ComfyUI>/models/vdn/vdn-minimax-h3-int8-convrot-comfyui
+```
+
+文件夹名即为 `vdn_checkpoint` 中的选项。也可以用 `tools/quantize_vdn_branch_int8.py` 自行量化任意 stage。
 
 8 步模型的 `turbo` 适配器**替代**(而非叠加)社区版 MiniMax-H3 turbo LoRA
 —— 两者不要同时启用。
