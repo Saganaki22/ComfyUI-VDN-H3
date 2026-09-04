@@ -32,10 +32,16 @@ def _disable_comfy_compiler_on_broken_builds():
     global _COMPILER_DISABLED_BY_VDN
     try:
         args = comfy.cli_args.args
+        # The compiler stack (comfy 2026-09-04, "Introduce Comfy Compiler") is
+        # what breaks VDN: model_prefetch gains the aimdo malloc-graph planner
+        # and cli_args gains the --disable-comfy-compiler switch. model_prefetch
+        # binds the package (import comfy_aimdo.malloc_graph -> comfy_aimdo), so
+        # probe the package for the submodule, not the module name.
+        if not hasattr(args, "disable_comfy_compiler"):
+            return False
         import comfy.model_prefetch
-        # malloc_graph only exists on builds with the new compiler (2026-09-04+);
-        # older builds never enter this branch.
-        if not hasattr(comfy.model_prefetch, "malloc_graph"):
+        aimdo = getattr(comfy.model_prefetch, "comfy_aimdo", None)
+        if aimdo is None or not hasattr(aimdo, "malloc_graph"):
             return False
         if getattr(args, "disable_comfy_compiler", False):
             return _COMPILER_DISABLED_BY_VDN
