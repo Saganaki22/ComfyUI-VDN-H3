@@ -37,6 +37,25 @@ What you don't get: the headline numbers. The official 74.5× figure combines 8-
 |:---:|:---:|
 | <video src="https://github.com/user-attachments/assets/89cc7155-ca89-459e-9996-5b5f6bfcd284" controls></video> | <video src="https://github.com/user-attachments/assets/5cc9906e-acec-4c61-a3b9-17c79153945b" controls></video> |
 
+<details>
+<summary><strong>VDN-H3 bf16 vs INT8 ConvRot — A/B videos (same seed &amp; settings) — click to expand</strong></summary>
+
+| VDN-H3 bf16 stage, er_sde / beta — 8 steps, 1280x736, 1:51 | VDN-H3 INT8 ConvRot stage, er_sde / beta — 8 steps, 1280x736, 1:35 |
+|:---:|:---:|
+| <video src="https://github.com/Saganaki22/ComfyUI-VDN-H3/releases/download/exp-int8-media/ab_bf16_8step_er_sde_beta.mp4" controls loop></video> | <video src="https://github.com/Saganaki22/ComfyUI-VDN-H3/releases/download/exp-int8-media/ab_int8convrot_8step_er_sde_beta.mp4" controls loop></video> |
+
+Same seed and settings on both sides (merge, `cache_gpu`); only the stage
+differs. The INT8 stage's branch matmuls run 2.7x faster; end-to-end ~1.2x
+faster in this single-run A/B. Identical output.
+[Details + timing table](#bf16-vs-int8-convrot--ab-same-seed--settings).
+
+</details>
+
+**Ref2V example (INT8 ConvRot stage)** — ref2va base, 8 steps, er_sde / beta,
+768x768:
+
+https://github.com/user-attachments/assets/65fd49e1-a4a3-4e28-9f3d-9dc8337354a7
+
 
 ### Same seed 
 `981445682258077`
@@ -85,7 +104,7 @@ builds, no `pip install`.
 > (strength 1.016) renders clean — it is specifically off-manifold rounding
 > noise, not the delta math. Merge is required for stage-dmd-*; bypass remains
 > available for non-DMD checkpoints.
-| `branch_weights` | `stream` (~4.3 GB of branch weights move to GPU per block per step — safe on small cards) / `cache_gpu` (resident, faster, keep ~4.3 GB VRAM free) |
+| `branch_weights` | `stream` (weights stream from disk straight to GPU per block per step — nothing extra held in RAM; safe on small cards) / `cache_gpu` (resident, faster, keep ~4.3 GB VRAM free) |
 | `attention_backend` | `grouped` (default; one dense SDPA per window group) / `flex` (one compiled FlexAttention kernel; opt-in, see Benchmarks.md) |
 | `verbose` | log the applied adapters and per-forward layout |
 
@@ -141,6 +160,30 @@ base (`h3-base/`) in the HF repo is *not* needed.
 
 **Tested and working with both the `fl2v` (fl2va) and `ref2v` (ref2va) MiniMax-H3
 base models.**
+
+**Pre-quantized INT8 stage available:** a ready-made INT8 ConvRot version of the
+8-step stage (identical outputs, branch 4.3 -> 2.2 GB, ~4.7 GB lower peak VRAM
+while loading) is at
+[drbaph/vdn-minimax-h3-int8-convrot-comfyui](https://huggingface.co/drbaph/vdn-minimax-h3-int8-convrot-comfyui) —
+download it into `models/vdn/` (e.g. `hf download drbaph/vdn-minimax-h3-int8-convrot-comfyui --local-dir models/vdn/vdn-minimax-h3-int8-convrot-comfyui`);
+the folder name becomes the `vdn_checkpoint` entry. Loading
+pre-quantized stages requires this branch; you can also quantize any stage
+yourself with `tools/quantize_vdn_branch_int8.py`.
+
+### BF16 vs INT8 ConvRot — A/B (same seed & settings)
+
+<details>
+<summary><strong>click to expand — timing table &amp; videos</strong></summary>
+
+8 steps, er_sde / beta, 1280x736 / 61 frames, merge, `cache_gpu`. Identical
+output; wall clock from a single run each (±5 s sampling).
+
+| stage | precision | wall time | peak VRAM (min free) | video |
+|---|---|---|---|---|
+| `stage-dmd-step-250` | bf16 | ~111 s | 3.6 GB free | <video src="https://github.com/user-attachments/assets/7539d6be-95fd-48e4-b3a4-b7bae677f194" controls></video> |
+| `stage-dmd-step-250-int8_convrot_comfyui` | int8 convrot | ~95 s | 8.3 GB free | <video src="https://github.com/user-attachments/assets/a5204f2e-7fab-40df-b761-f1f4d9caf54a" controls></video> |
+
+</details>
 
 The 8-step model's `turbo` adapter replaces (does not stack with) community
 MiniMax-H3 turbo LoRAs — do not run both.

@@ -79,15 +79,20 @@ class VDNState:
 
     def weights_on(self, index, device, dtype):
         w = self.branches[index].w
+
+        def fetch(t, copy=False):
+            resolve = getattr(t, "resolve", None)
+            if resolve is not None:
+                return resolve(device, dtype)  # disk-backed: read straight to device
+            return comfy.model_management.cast_to(t, dtype=dtype, device=device,
+                                                  copy=copy)
+
         if not self.cache_gpu:
-            return {k: comfy.model_management.cast_to(t, dtype=dtype, device=device)
-                    for k, t in w.items()}
+            return {k: fetch(t) for k, t in w.items()}
         key = (index, str(device), str(dtype))
         hit = self._gpu_cache.get(key)
         if hit is None:
-            hit = {k: comfy.model_management.cast_to(t, dtype=dtype, device=device,
-                                                     copy=True)
-                   for k, t in w.items()}
+            hit = {k: fetch(t, copy=True) for k, t in w.items()}
             self._gpu_cache[key] = hit
         return hit
 

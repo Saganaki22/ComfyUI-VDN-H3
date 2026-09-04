@@ -10,6 +10,7 @@ import logging
 import os
 
 import folder_paths
+import torch
 from safetensors.torch import load_file
 
 _log = logging.getLogger("comfy.vdn")
@@ -17,6 +18,115 @@ _log = logging.getLogger("comfy.vdn")
 SUPPORTED_DELTA_RULES = ("vdn_solve", "sana_scaled", "vdn_scaled")
 SUPPORTED_ANCHORS = ("none", "columns", "rows", "both")
 SHORT_CONV_TARGETS = ("q", "k", "v")
+
+BRANCH_FILE = "model.safetensors"
+BRANCH_FILE_INT8 = "model_int8_convrot_comfyui.safetensors"
+
+try:
+    from comfy_kitchen.tensor import QuantizedTensor, TensorWiseINT8Layout
+    _KITCHEN_OK = True
+except ImportError:  # pragma: no cover - kitchen ships with comfy
+    QuantizedTensor = TensorWiseINT8Layout = None
+    _KITCHEN_OK = False
+
+
+def _branch_file(path):
+    """The stage's branch file: plain, or the pre-quantized int8_convrot_comfyui one."""
+    plain = os.path.join(path, "linear_branch", BRANCH_FILE)
+    if os.path.isfile(plain):
+        return plain
+    quant = os.path.join(path, "linear_branch", BRANCH_FILE_INT8)
+    if os.path.isfile(quant):
+        return quant
+    return plain
+
+
+def _read_header(path):
+    """The safetensors JSON header: {key: {"dtype": ..., "shape": [...]}}."""
+    import struct
+    with open(path, "rb") as f:
+        n = struct.unpack("<Q", f.read(8))[0]
+        return json.loads(f.read(n))
+
+
+SAFETENSORS_DTYPES = {"BF16": torch.bfloat16, "F16": torch.float16,
+                      "F32": torch.float32, "I8": torch.int8,
+                      "U8": torch.uint8}
+
+# One mmap handle per (file, device). The OS page cache manages residency, so
+# branch weights are read from disk on demand and never accumulated as owned
+# CPU tensors (the same disk-backed philosophy as comfy's --fast-disk).
+_HANDLES = {}
+
+
+def _handle(path, device):
+    h = _HANDLES.get((path, device))
+    if h is None:
+        from safetensors import safe_open
+        h = safe_open(path, framework="pt", device=device)
+        _HANDLES[(path, device)] = h
+    return h
+
+
+class LazyBranchTensor:
+    """A branch weight kept on disk: reads straight from the safetensors mmap to
+    the target device on resolve(). Per-block stream reads replace the old
+    full-branch load_file() into committed CPU RAM."""
+
+    __slots__ = ("_path", "_key", "_scale_key", "_conf", "shape", "dtype")
+
+    def __init__(self, path, key, shape, dtype, scale_key=None, conf=None):
+        self._path = path
+        self._key = key
+        self._scale_key = scale_key
+        self._conf = conf
+        self.shape = shape
+        self.dtype = dtype
+
+    def resolve(self, device, dtype=None):
+        h = _handle(self._path, str(device))
+        if self._conf is None:
+            t = h.get_tensor(self._key)
+            return t if dtype is None or t.dtype == dtype else t.to(dtype)
+        qdata = h.get_tensor(self._key)
+        scale = h.get_tensor(self._scale_key)
+        return QuantizedTensor(
+            qdata, "TensorWiseINT8Layout",
+            TensorWiseINT8Layout.Params(
+                scale=scale, orig_dtype=dtype or torch.bfloat16,
+                orig_shape=tuple(self.shape), is_weight=True,
+                convrot=bool(self._conf.get("convrot", False)),
+                convrot_groupsize=int(self._conf.get("convrot_groupsize", 256))))
+
+
+def _lazy_branch_sd(path):
+    """Descriptors for every tensor in a branch file, quantization included."""
+    header = _read_header(path)
+    conf_keys = [k for k in header if k.endswith(".comfy_quant")]
+    confs = {}
+    if conf_keys:
+        h = _handle(path, "cpu")
+        for k in conf_keys:
+            layer = k[: -len(".comfy_quant")]
+            confs[layer] = json.loads(
+                bytes(h.get_tensor(k).tolist()).decode("utf-8"))
+    out = {}
+    for key, meta in header.items():
+        if key == "__metadata__" or key.endswith(".comfy_quant"):
+            continue
+        if key.endswith(".weight_scale") \
+                and key[: -len(".weight_scale")] in confs:
+            continue
+        layer = key[: -len(".weight")] if key.endswith(".weight") else None
+        conf = confs.get(layer) if layer else None
+        scale_key = key + "_scale" if conf else None
+        if conf and scale_key not in header:
+            conf = None
+            scale_key = None
+        out[key] = LazyBranchTensor(
+            path, key, torch.Size(meta["shape"]),
+            SAFETENSORS_DTYPES.get(meta["dtype"]), scale_key, conf)
+    return out
 
 
 def register_folder():
@@ -31,13 +141,14 @@ def vdn_folders():
 
 
 def list_vdn_checkpoints():
-    """Relative names of directories holding linear_branch/model.safetensors."""
+    """Relative names of directories holding a linear_branch branch file (plain
+    bf16 or pre-quantized int8_convrot_comfyui)."""
     found = []
     for root in vdn_folders():
         if not os.path.isdir(root):
             continue
         for dirpath, dirnames, _files in os.walk(root):
-            if os.path.isfile(os.path.join(dirpath, "linear_branch", "model.safetensors")):
+            if os.path.isfile(_branch_file(dirpath)):
                 rel = os.path.relpath(dirpath, root)
                 found.append(rel.replace("\\", "/"))
                 dirnames[:] = []
@@ -47,7 +158,7 @@ def list_vdn_checkpoints():
 def resolve_vdn_checkpoint(name):
     for root in vdn_folders():
         path = os.path.join(root, *name.split("/"))
-        if os.path.isfile(os.path.join(path, "linear_branch", "model.safetensors")):
+        if os.path.isfile(_branch_file(path)):
             return path
     raise FileNotFoundError(
         f"VDN checkpoint {name!r} not found under {vdn_folders()}. Download the "
@@ -105,8 +216,8 @@ def load_vdn_checkpoint(path):
     """Read model_spec.json + linear_branch + adapters. Returns
     (cfg, branch_weights_by_block, {adapter_name: (sd, adapter_spec)}). Cached by
     (path, mtime) so re-running the node doesn't re-read 5 GB."""
-    stamp = (path, os.path.getmtime(os.path.join(path, "linear_branch",
-                                                 "model.safetensors")))
+    branch_path = _branch_file(path)
+    stamp = (path, os.path.getmtime(branch_path))
     hit = _CACHE.get(stamp)
     if hit is not None:
         return hit
@@ -119,7 +230,7 @@ def load_vdn_checkpoint(path):
     spec = _read_json(spec_path)
     cfg = transform_config(spec)
 
-    branch_sd = load_file(os.path.join(path, "linear_branch", "model.safetensors"))
+    branch_sd = _lazy_branch_sd(branch_path)
     num_blocks = 0
     for key in branch_sd:
         if ".attn.to_out_linear.weight" in key:
@@ -136,7 +247,7 @@ def load_vdn_checkpoint(path):
             # (...attn.linear_attention.alpha.A_log) and the branch reads bare names
             if name.startswith("linear_attention."):
                 name = name[len("linear_attention."):]
-            w[name] = tensor.contiguous()
+            w[name] = tensor
         missing = {"to_out_linear.weight", "beta_proj.weight", "norm.weight",
                    "alpha.A_log", "alpha.dt_bias", "alpha.down.weight",
                    "alpha.up.weight", "output_gate.down.weight",
@@ -145,7 +256,6 @@ def load_vdn_checkpoint(path):
             raise ValueError(f"block {i} of {path} is missing branch tensors: "
                              f"{sorted(missing)}")
         branches.append(w)
-    del branch_sd
 
     adapters = {}
     adapters_root = os.path.join(path, "adapters")
