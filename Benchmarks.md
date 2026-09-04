@@ -11,7 +11,12 @@ load and the VAE decode.
 
 ### 1280x736, 145 frames (F=47 latent, seq 34,487) — headline config
 
-Fresh server per run, first run of each, stream mode, seed 42, prompt 0:
+Fresh server per run, first run of each, stream mode, seed 42, prompt 0. ALL
+rows measured with the identical methodology: `VDNResetPeak` in the model chain
+(`torch.cuda.reset_peak_memory_stats()` right after the model chain), peak read
+at the post-sampling latent dump — i.e. the sampling-phase peak, excluding the
+one-time model load and the VAE decode. The baseline row ran the v1.3.1
+checkout (git-verified) with the same workflow generator.
 
 | build | allocation mode | s/it | sampling peak |
 |---|---|---|---|
