@@ -150,6 +150,16 @@ drop it into `models/vdn/` and select it in `vdn_checkpoint`. Loading
 pre-quantized stages requires this branch; you can also quantize any stage
 yourself with `tools/quantize_vdn_branch_int8.py`.
 
+### BF16 vs INT8 ConvRot — A/B (same seed & settings)
+
+8 steps, er_sde / beta, 1280x736 / 61 frames, merge, `cache_gpu`. Identical
+output; wall clock from a single run each (±5 s sampling).
+
+| stage | precision | wall time | peak VRAM (min free) | video |
+|---|---|---|---|---|
+| `stage-dmd-step-250` | bf16 | ~111 s | 3.6 GB free | [assets/ab_bf16_8step_er_sde_beta.mp4](assets/ab_bf16_8step_er_sde_beta.mp4) |
+| `stage-dmd-step-250-int8_convrot_comfyui` | int8 convrot | ~95 s | 8.3 GB free | [assets/ab_int8convrot_8step_er_sde_beta.mp4](assets/ab_int8convrot_8step_er_sde_beta.mp4) |
+
 The 8-step model's `turbo` adapter replaces (does not stack with) community
 MiniMax-H3 turbo LoRAs — do not run both.
 
