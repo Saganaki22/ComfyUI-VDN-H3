@@ -58,9 +58,13 @@ faster in this single-run A/B. Identical output.
 </details>
 
 **Ref2V example (INT8 ConvRot stage)** — ref2va base, 8 steps, er_sde / beta,
-768x768:
+928x928:
 
-https://github.com/user-attachments/assets/65fd49e1-a4a3-4e28-9f3d-9dc8337354a7
+
+
+https://github.com/user-attachments/assets/5b17a3fb-1361-4da9-b52c-603bd5e7c1f1
+
+
 
 
 ### Same seed 
