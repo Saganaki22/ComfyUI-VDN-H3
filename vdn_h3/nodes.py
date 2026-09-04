@@ -9,6 +9,7 @@ import comfy.model_management
 
 from vdn_h3.apply import apply_adapters
 from vdn_h3.hybrid import VDNState, apply_vdn
+from vdn_h3 import branch
 from vdn_h3.branch import LinearBranch
 import vdn_h3.spec as spec
 
@@ -25,6 +26,12 @@ def _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
     path = spec.resolve_vdn_checkpoint(vdn_checkpoint)
     prefer_int8 = False
     retain = True
+    if fast_kernels and branch._allocator_blocks_cudagraphs():
+        fast_kernels = False
+        _log.warning("[vdn] fast_kernels ignored: the cudaMallocAsync allocator "
+                     "crashes with the fused branch kernels (hard abort, first "
+                     "step). Running the standard v1.3.1 kernels instead -- launch "
+                     "comfy with --disable-cuda-malloc if you want fast_kernels.")
     if branch_weights == "auto" or retain_buffers == "auto":
         # free VRAM right now = after the base model's load in the same run
         free = comfy.model_management.get_free_memory(
@@ -166,17 +173,18 @@ class ApplyVDNH3:
                            "rounding noise is amplified by the deep blocks and "
                            "visibly degrades output."}),
             "branch_weights": (["auto", "stream", "cache_gpu"], {
-                "default": "auto",
-                "tooltip": "auto (default): cache_gpu when the free VRAM after the "
-                           "base load exceeds 1.5x the stage size + 4 GiB headroom, "
-                           "else stream (prefers the int8_convrot stage file under "
-                           "memory pressure). stream: the ~4.3 GB of linear-branch "
-                           "weights are moved to the GPU per block per step, with a "
-                           "one-block lookahead prefetch (safe on small cards). "
-                           "cache_gpu: resident on the GPU after the first step "
-                           "(faster; keep ~4.3 GB VRAM free)."}),
+                "default": "stream",
+                "tooltip": "stream (default, v1.3.1 behavior): the ~4.3 GB of "
+                           "linear-branch weights are moved to the GPU per block "
+                           "per step, with a one-block lookahead prefetch (safe on "
+                           "small cards). cache_gpu: resident on the GPU after the "
+                           "first step (faster; keep ~4.3 GB VRAM free). auto: "
+                           "picks cache_gpu when the free VRAM after the base load "
+                           "exceeds 1.5x the stage size + 4 GiB headroom, else "
+                           "stream (prefers the int8_convrot stage file under "
+                           "memory pressure); opt-in."}),
             "retain_buffers": (["auto", "on", "off"], {
-                "default": "auto",
+                "default": "off",
                 "tooltip": "Retained branch scratch/banks (scan banks, delta "
                            "solve, window gather, q/k/v copies + prefetch) trade "
                            "~0.5-1 GiB VRAM for churn-free steps. auto: retain "
@@ -235,8 +243,8 @@ class ApplyVDNH3Advanced:
                 "default": "merge",
                 "tooltip": "merge required for 8-step DMD checkpoints; see the "
                            "base node's tooltip."}),
-            "branch_weights": (["auto", "stream", "cache_gpu"], {"default": "auto"}),
-            "retain_buffers": (["auto", "on", "off"], {"default": "auto"}),
+            "branch_weights": (["auto", "stream", "cache_gpu"], {"default": "stream"}),
+            "retain_buffers": (["auto", "on", "off"], {"default": "off"}),
             "verbose": ("BOOLEAN", {"default": False}),
             "attention_backend": (["grouped", "flex"], {"default": "grouped"}),
         }, "optional": {

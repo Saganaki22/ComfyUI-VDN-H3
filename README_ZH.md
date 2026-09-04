@@ -109,7 +109,7 @@ safetensors)运行官方数学,不需要 Triton、flash-attn-4、CUDA 编译或
 | `anchor_frames` | `both` / `columns` / `rows` / `none`(训练值 `both`) |
 | `text_state` | 初始化时把提示词写入线性分支状态(训练值:开) |
 | `linear_branch` | 关 = 仅窗口消融(调试;长片段将失去全部长距离上下文) |
-| `fast_kernels` | torch.compile 把分支热点(RMSNorm+门控尾声、状态收集、帧主序 q 存储、双向扫描为单次 CUDA-graph 重放)融合为单内核(数学相同;编译失败自动回退 eager)。**已知在 torch 2.10 上对 8 步 DMD stage(`stage-dmd-*`)产生可见漂移** —— 融合内核的 bf16 舍入误差被蒸馏采样器放大。仅限消融实验;最终渲染请关闭(节点会打印警告) |
+| `fast_kernels` | torch.compile 把分支热点(RMSNorm+门控尾声、状态收集、帧主序 q 存储、双向扫描为单次 CUDA-graph 重放)融合为单内核(数学相同;编译失败自动回退 eager)。**已知在 torch 2.10 上对 8 步 DMD stage(`stage-dmd-*`)产生可见漂移** —— 融合内核的 bf16 舍入误差被蒸馏采样器放大。仅限消融实验;最终渲染请关闭(节点会打印警告)。**在 comfy 默认 cudaMallocAsync 分配器上若融合内核导致进程硬崩溃(第一步即崩),节点会自动跳过并打印日志;此时请加 `--disable-cuda-malloc` 启动参数后再使用 fast_kernels** |
 
 消融输入偏离检查点训练规格时会在控制台警告;全部默认值精确复现发布模型。
 

@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-vdn-h3"
-version = "1.4.0"
+version = "1.4.1"
 description = "VDN-H3 (Video Delta Net) hybrid attention for MiniMax-H3"
 license = { file = "LICENSE" }
 dependencies = []
