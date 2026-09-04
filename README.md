@@ -172,6 +172,9 @@ yourself with `tools/quantize_vdn_branch_int8.py`.
 
 ### BF16 vs INT8 ConvRot — A/B (same seed & settings)
 
+<details>
+<summary><strong>click to expand — timing table &amp; videos</strong></summary>
+
 8 steps, er_sde / beta, 1280x736 / 61 frames, merge, `cache_gpu`. Identical
 output; wall clock from a single run each (±5 s sampling).
 
@@ -179,6 +182,8 @@ output; wall clock from a single run each (±5 s sampling).
 |---|---|---|---|---|
 | `stage-dmd-step-250` | bf16 | ~111 s | 3.6 GB free | <video src="https://github.com/user-attachments/assets/7539d6be-95fd-48e4-b3a4-b7bae677f194" controls></video> |
 | `stage-dmd-step-250-int8_convrot_comfyui` | int8 convrot | ~95 s | 8.3 GB free | <video src="https://github.com/user-attachments/assets/a5204f2e-7fab-40df-b761-f1f4d9caf54a" controls></video> |
+
+</details>
 
 The 8-step model's `turbo` adapter replaces (does not stack with) community
 MiniMax-H3 turbo LoRAs — do not run both.
