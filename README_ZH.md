@@ -21,6 +21,8 @@ Attention** 线性分支,把平方级的长距离注意力替换为常数成本�
 
 你得不到:头条数字。官方 74.5 倍来自 8 卡并行 + FA4 + FP8 + 8 步蒸馏的组合;上游自己的单卡实测为 50 步约 2.6 倍,而本移植的通用内核略低于此(RTX 5090、1280×736 / 145 帧实测约 17 秒/it —— 见 Benchmarks.md)。想在自己的硬件上试验这套架构,这就是为你准备的;想要实时流式生成的数字,那需要他们的 B200 集群。
 
+**硬件现实检查。** 这不是运行 MiniMax-H3 最快或最轻量的方式 —— 这是一个实验性的 PyTorch 移植,用相似的数学复现相似的结果。本节点在每个 transformer 块、每个采样步上都要额外运行一个线性分支网络,所需算力与显存远高于 int8 融合注意力(comfy-kitchen)、SageAttention、SOL 或 SLA —— 用那些方法,同样的显卡大约能跑两倍的分辨率与时长。换来的是:片段越长、分辨率越高,收益越大 —— VDN 的注意力开销随时长线性增长而非平方增长 —— 前提是你的显存喂得饱它。上游方法面向 8× B200 数据中心 GPU 集群设计,并非消费级硬件。**显存或内存紧张的话,不建议使用本仓库/模型/方法。**
+
 | CK、Sol-attn、res_multi / simple —— 20 步，1280x736，3:05 | LightXv2 4-Step Turbo v1.1、CK、Sol-attn、er_sde / beta —— 8 步，1280x736，1:24 |
 |:---:|:---:|
 | <video src="https://github.com/user-attachments/assets/7120657d-af61-4414-b621-53b39208ffe0" controls></video> | <video src="https://github.com/user-attachments/assets/b0373566-fc78-4616-b591-13462c4b50e6" controls></video> |
