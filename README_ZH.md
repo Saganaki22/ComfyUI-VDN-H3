@@ -33,7 +33,7 @@ Attention** 线性分支,把平方级的长距离注意力替换为常数成本�
 
 | VDN-H3 bf16 stage、er_sde / beta —— 8 步，1280x736，1:51 | VDN-H3 INT8 ConvRot stage、er_sde / beta —— 8 步，1280x736，1:35 |
 |:---:|:---:|
-| <video src="assets/ab_bf16_8step_er_sde_beta.mp4" controls loop></video> | <video src="assets/ab_int8convrot_8step_er_sde_beta.mp4" controls loop></video> |
+| <video src="https://github.com/Saganaki22/ComfyUI-VDN-H3/releases/download/exp-int8-media/ab_bf16_8step_er_sde_beta.mp4" controls loop></video> | <video src="https://github.com/Saganaki22/ComfyUI-VDN-H3/releases/download/exp-int8-media/ab_int8convrot_8step_er_sde_beta.mp4" controls loop></video> |
 
 两侧种子与设置完全相同（merge、`cache_gpu`），仅 stage 不同。INT8 stage 的
 分支矩阵乘法快 2.7 倍，此单次 A/B 端到端快约 1.2 倍，输出一致。
@@ -42,7 +42,7 @@ Attention** 线性分支,把平方级的长距离注意力替换为常数成本�
 **Ref2V 示例（INT8 ConvRot stage）** —— ref2va 基座，8 步，er_sde / beta，
 768x768：
 
-<video src="assets/int8-ref2va-8step-vdn.mp4" controls loop></video>
+<video src="https://github.com/Saganaki22/ComfyUI-VDN-H3/releases/download/exp-int8-media/int8-ref2va-8step-vdn.mp4" controls loop></video>
 
 ### 相同种子
 
