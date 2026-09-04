@@ -1,8 +1,8 @@
 {
   "id": "68951533-1b9c-4260-97c8-52ca4aee9cba",
   "revision": 0,
-  "last_node_id": 27,
-  "last_link_id": 59,
+  "last_node_id": 32,
+  "last_link_id": 80,
   "nodes": [
     {
       "id": 5,
@@ -57,7 +57,7 @@
         106
       ],
       "flags": {},
-      "order": 16,
+      "order": 12,
       "mode": 0,
       "inputs": [
         {
@@ -124,7 +124,7 @@
         46
       ],
       "flags": {},
-      "order": 17,
+      "order": 13,
       "mode": 0,
       "inputs": [
         {
@@ -215,7 +215,7 @@
         46
       ],
       "flags": {},
-      "order": 15,
+      "order": 11,
       "mode": 0,
       "inputs": [
         {
@@ -344,13 +344,13 @@
         106
       ],
       "flags": {},
-      "order": 14,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 51
+          "link": 76
         }
       ],
       "outputs": [
@@ -395,7 +395,7 @@
         46
       ],
       "flags": {},
-      "order": 18,
+      "order": 14,
       "mode": 0,
       "inputs": [
         {
@@ -430,92 +430,33 @@
       }
     },
     {
-      "id": 19,
-      "type": "ModelAttentionBackend",
+      "id": 8,
+      "type": "RandomNoise",
       "pos": [
-        -509.4763556769225,
-        9.233644810455466
+        100,
+        954
       ],
       "size": [
-        276.69921875,
-        58
+        270,
+        82
       ],
       "flags": {},
-      "order": 9,
+      "order": 4,
       "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 46
-        }
-      ],
+      "inputs": [],
       "outputs": [
         {
-          "name": "MODEL",
-          "type": "MODEL",
+          "name": "NOISE",
+          "type": "NOISE",
           "links": [
-            41
+            23
           ]
         }
       ],
       "properties": {
         "cnr_id": "comfy-core",
-        "ver": "0.33.0",
-        "Node name for S&R": "ModelAttentionBackend",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "version": "7.8",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "comfy kitchen attention"
-      ],
-      "widgets_values_named": {
-        "attention": "comfy kitchen attention"
-      }
-    },
-    {
-      "id": 20,
-      "type": "SolAttnMiniMax",
-      "pos": [
-        -512.4062311827558,
-        132.42444648388735
-      ],
-      "size": [
-        296.2701276934923,
-        342
-      ],
-      "flags": {
-        "collapsed": false
-      },
-      "order": 11,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 41
-        },
-        {
-          "name": "tau_profile",
-          "shape": 7,
-          "type": "STRING",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            53
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "SolAttnMiniMax",
+        "ver": "0.34.0",
+        "Node name for S&R": "RandomNoise",
         "ue_properties": {
           "widget_ue_connectable": {},
           "input_ue_unconnectable": {},
@@ -523,33 +464,250 @@
         }
       },
       "widgets_values": [
-        1.2,
-        0.2,
-        0.9,
-        12288,
-        "exact_kv_and_rows",
-        false,
-        "2d_frame",
-        true,
-        0,
-        false,
-        false,
-        ""
+        981445682258077,
+        "fixed"
       ],
       "widgets_values_named": {
-        "tau": 1.2,
-        "start_percent": 0.2,
-        "end_percent": 0.9,
-        "min_tokens": 12288,
-        "sink_conditioning": "exact_kv_and_rows",
-        "morton": false,
-        "morton_curve": "2d_frame",
-        "centroid_tail": true,
-        "routed_cap_percent": 0,
-        "reuse_qkv_memory": false,
-        "verbose": false,
-        "dense_blocks": ""
+        "noise_seed": 981445682258077,
+        "control_after_generate": "fixed"
       }
+    },
+    {
+      "id": 16,
+      "type": "SaveVideo",
+      "pos": [
+        2094.20840448053,
+        131.46772593428366
+      ],
+      "size": [
+        985.422524141512,
+        639.9823882778317
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 34
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.34.0",
+        "Node name for S&R": "SaveVideo",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "vdn_h3_smoke",
+        "auto",
+        "auto",
+        "auto"
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "vdn_h3_smoke",
+        "format": "auto",
+        "format.codec": "auto",
+        "codec": "auto"
+      }
+    },
+    {
+      "id": 15,
+      "type": "CreateVideo",
+      "pos": [
+        1748.1168419905664,
+        130
+      ],
+      "size": [
+        270,
+        126
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 32
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 33
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            34
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.34.0",
+        "Node name for S&R": "CreateVideo",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        24,
+        "auto",
+        "sRGB"
+      ],
+      "widgets_values_named": {
+        "fps": 24,
+        "bit_depth": "auto",
+        "color_space": "sRGB"
+      }
+    },
+    {
+      "id": 32,
+      "type": "ApplyVDNH3Advanced",
+      "pos": [
+        -89.0029982424508,
+        -228.0284720004394
+      ],
+      "size": [
+        442.6333984375,
+        394
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 79
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            80
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-vdn-h3",
+        "ver": "29ed2a2cdc45d97bdfb54dd6bc43b8ecb7f021b4",
+        "Node name for S&R": "ApplyVDNH3Advanced",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "stage-dmd-step-250-int8_convrot_comfyui",
+        true,
+        1,
+        1,
+        "merge",
+        "auto",
+        "auto",
+        true,
+        "grouped",
+        1,
+        5,
+        "both",
+        true,
+        true,
+        true
+      ],
+      "widgets_values_named": {
+        "vdn_checkpoint": "stage-dmd-step-250-int8_convrot_comfyui",
+        "apply_turbo_adapter": true,
+        "stage_b_strength": 1,
+        "turbo_strength": 1,
+        "lora_mode": "merge",
+        "branch_weights": "auto",
+        "retain_buffers": "auto",
+        "verbose": true,
+        "attention_backend": "grouped",
+        "window_radius": 1,
+        "window_chunk": 5,
+        "anchor_frames": "both",
+        "text_state": true,
+        "linear_branch": true,
+        "fast_kernels": true
+      },
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 27,
+      "type": "MiniMaxChunkFeedForward",
+      "pos": [
+        -78.6380195955163,
+        -360.67346461643785
+      ],
+      "size": [
+        412.72927843663877,
+        82
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 80
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            75,
+            76
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-kjnodes",
+        "ver": "1.5.0",
+        "Node name for S&R": "MiniMaxChunkFeedForward",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        2,
+        4096
+      ],
+      "widgets_values_named": {
+        "chunks": 2,
+        "seq_threshold": 4096
+      },
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
     },
     {
       "id": 6,
@@ -618,327 +776,35 @@
       "widgets_values": [
         "integrated_multimodal_description: [Shot 1] Live-action, cinematic, a medium-wide side-profile shot frames a grey squirrel perched atop a large European herring gull as the bird walks along the pebbled Brighton seafront promenade. The camera tracks the pair laterally from the left side while zooming in with medium amplitude at moderate speed, keeping both animals in profile as the gull strides steadily over smooth grey stones. The squirrel sits upright on the gull's back, its small front paws gripping the white and grey plumage while its bushy tail curls upward for balance. Bright summer sunlight reflects off the calm sea visible in the background to the left, with gentle waves rolling toward the shore, while pastel beach huts line the distant right edge of the empty promenade. The gull's webbed feet scrape and shift the pebbles with each deliberate step, and the squirrel's ears twitch occasionally as they progress along the deserted waterfront in a continuous side view.\n\noverall_soundscape: The gull's webbed feet scrape and crunch against the shifting pebbles with each step. Gentle waves lap rhythmically against the nearby shore while a soft coastal breeze rustles through, and the squirrel's claws scratch lightly against the bird's feathers.\n\nnon_diegetic_music: N/A",
         1280,
-        736,
+        704,
         124
       ],
       "widgets_values_named": {
         "prompt": "integrated_multimodal_description: [Shot 1] Live-action, cinematic, a medium-wide side-profile shot frames a grey squirrel perched atop a large European herring gull as the bird walks along the pebbled Brighton seafront promenade. The camera tracks the pair laterally from the left side while zooming in with medium amplitude at moderate speed, keeping both animals in profile as the gull strides steadily over smooth grey stones. The squirrel sits upright on the gull's back, its small front paws gripping the white and grey plumage while its bushy tail curls upward for balance. Bright summer sunlight reflects off the calm sea visible in the background to the left, with gentle waves rolling toward the shore, while pastel beach huts line the distant right edge of the empty promenade. The gull's webbed feet scrape and shift the pebbles with each deliberate step, and the squirrel's ears twitch occasionally as they progress along the deserted waterfront in a continuous side view.\n\noverall_soundscape: The gull's webbed feet scrape and crunch against the shifting pebbles with each step. Gentle waves lap rhythmically against the nearby shore while a soft coastal breeze rustles through, and the squirrel's claws scratch lightly against the bird's feathers.\n\nnon_diegetic_music: N/A",
         "width": 1280,
-        "height": 736,
+        "height": 704,
         "length": 124
-      }
-    },
-    {
-      "id": 1,
-      "type": "UNETLoader",
-      "pos": [
-        -1175.4983145917545,
-        -265.95574411795434
-      ],
-      "size": [
-        384.908183697198,
-        86.25585865545179
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            45,
-            56
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.34.0",
-        "Node name for S&R": "UNETLoader",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.8"
-        }
-      },
-      "widgets_values": [
-        "minimax_h3_fl2va_int8_convrot.safetensors",
-        "default"
-      ],
-      "widgets_values_named": {
-        "unet_name": "minimax_h3_fl2va_int8_convrot.safetensors",
-        "weight_dtype": "default"
-      }
-    },
-    {
-      "id": 8,
-      "type": "RandomNoise",
-      "pos": [
-        100,
-        954
-      ],
-      "size": [
-        270,
-        82
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "NOISE",
-          "type": "NOISE",
-          "links": [
-            23
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.34.0",
-        "Node name for S&R": "RandomNoise",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.8"
-        }
-      },
-      "widgets_values": [
-        981445682258077,
-        "fixed"
-      ],
-      "widgets_values_named": {
-        "noise_seed": 981445682258077,
-        "control_after_generate": "fixed"
-      }
-    },
-    {
-      "id": 27,
-      "type": "MiniMaxChunkFeedForward",
-      "pos": [
-        -534.194712429693,
-        -647.6935793987163
-      ],
-      "size": [
-        316.38046875,
-        82
-      ],
-      "flags": {},
-      "order": 10,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 58
-        }
-      ],
-      "outputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "links": [
-            59
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfyui-kjnodes",
-        "ver": "1.5.0",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        },
-        "Node name for S&R": "MiniMaxChunkFeedForward"
-      },
-      "widgets_values": [
-        2,
-        4096
-      ],
-      "widgets_values_named": {
-        "chunks": 2,
-        "seq_threshold": 4096
-      }
-    },
-    {
-      "id": 16,
-      "type": "SaveVideo",
-      "pos": [
-        2094.20840448053,
-        131.46772593428366
-      ],
-      "size": [
-        985.422524141512,
-        664.6179513813694
-      ],
-      "flags": {},
-      "order": 20,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "video",
-          "type": "VIDEO",
-          "link": 34
-        }
-      ],
-      "outputs": [
-        {
-          "name": "video",
-          "type": "VIDEO",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.34.0",
-        "Node name for S&R": "SaveVideo",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.8"
-        }
-      },
-      "widgets_values": [
-        "vdn_h3_smoke",
-        "auto",
-        "auto",
-        "auto"
-      ],
-      "widgets_values_named": {
-        "filename_prefix": "vdn_h3_smoke",
-        "format": "auto",
-        "format.codec": "auto",
-        "codec": "auto"
-      }
-    },
-    {
-      "id": 21,
-      "type": "LoraLoaderModelOnly",
-      "pos": [
-        -493.0197794674834,
-        -135.75409845197893
-      ],
-      "size": [
-        270.1595946995792,
-        87.8518056512462
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 45
-        }
-      ],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            46
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.34.0",
-        "Node name for S&R": "LoraLoaderModelOnly",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.8"
-        }
-      },
-      "widgets_values": [
-        "h3\\minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_resized_avg_rank_64_bf16.safetensors",
-        0.65
-      ],
-      "widgets_values_named": {
-        "lora_name": "h3\\minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_resized_avg_rank_64_bf16.safetensors",
-        "strength_model": 0.65
-      }
-    },
-    {
-      "id": 15,
-      "type": "CreateVideo",
-      "pos": [
-        1748.1168419905664,
-        130
-      ],
-      "size": [
-        270,
-        126
-      ],
-      "flags": {},
-      "order": 19,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 32
-        },
-        {
-          "name": "audio",
-          "shape": 7,
-          "type": "AUDIO",
-          "link": 33
-        }
-      ],
-      "outputs": [
-        {
-          "name": "VIDEO",
-          "type": "VIDEO",
-          "links": [
-            34
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.34.0",
-        "Node name for S&R": "CreateVideo",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.8"
-        }
-      },
-      "widgets_values": [
-        24,
-        "auto",
-        "sRGB"
-      ],
-      "widgets_values_named": {
-        "fps": 24,
-        "bit_depth": "auto",
-        "color_space": "sRGB"
       }
     },
     {
       "id": 17,
       "type": "ModelPreviewOverrideKJ",
       "pos": [
-        505.6307514100487,
-        -392.86883964873704
+        502.2915745171529,
+        -394.5384280951848
       ],
       "size": [
         406.7325199308523,
         615.5243077994713
       ],
       "flags": {},
-      "order": 13,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 49
+          "link": 75
         },
         {
           "name": "vae",
@@ -970,7 +836,7 @@
         360,
         80,
         true,
-        120,
+        124,
         12,
         "taeh3.safetensors",
         ""
@@ -979,46 +845,40 @@
         "max_resolution": 360,
         "jpeg_quality": 80,
         "suppress_default_preview": true,
-        "preview_frames": 120,
+        "preview_frames": 124,
         "preview_fps": 12,
         "tiny_vae": "taeh3.safetensors",
         "preview": ""
       }
     },
     {
-      "id": 25,
-      "type": "ApplyVDNH3",
+      "id": 1,
+      "type": "UNETLoader",
       "pos": [
-        -585.7957795067739,
-        -502.1153109090065
+        -554.41141251312,
+        -227.55520984965173
       ],
       "size": [
-        404.6529296875,
-        202
+        384.908183697198,
+        86.25585865545179
       ],
       "flags": {},
-      "order": 8,
+      "order": 5,
       "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 56
-        }
-      ],
+      "inputs": [],
       "outputs": [
         {
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            58
+            79
           ]
         }
       ],
       "properties": {
-        "cnr_id": "comfyui-vdn-h3",
-        "ver": "11a1aae52bbec66daca9fb1d753dfb5b9cecc65a",
-        "Node name for S&R": "ApplyVDNH3",
+        "cnr_id": "comfy-core",
+        "ver": "0.34.0",
+        "Node name for S&R": "UNETLoader",
         "ue_properties": {
           "widget_ue_connectable": {},
           "input_ue_unconnectable": {},
@@ -1026,76 +886,12 @@
         }
       },
       "widgets_values": [
-        "stage-dmd-step-250",
-        true,
-        1,
-        "merge",
-        "cache_gpu",
-        true,
-        "grouped"
+        "minimax_h3_fl2va_int8_convrot.safetensors",
+        "default"
       ],
       "widgets_values_named": {
-        "vdn_checkpoint": "stage-dmd-step-250",
-        "apply_turbo_adapter": true,
-        "strength": 1,
-        "lora_mode": "merge",
-        "branch_weights": "cache_gpu",
-        "verbose": true,
-        "attention_backend": "grouped"
-      }
-    },
-    {
-      "id": 23,
-      "type": "Switch",
-      "pos": [
-        87.47979201026614,
-        -402.854935996302
-      ],
-      "size": [
-        270,
-        78
-      ],
-      "flags": {},
-      "order": 12,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "on_true",
-          "type": "*",
-          "link": 59
-        },
-        {
-          "name": "on_false",
-          "type": "*",
-          "link": 53
-        }
-      ],
-      "outputs": [
-        {
-          "name": "OUT",
-          "type": "*",
-          "links": [
-            49,
-            51
-          ]
-        }
-      ],
-      "title": "True = VDNH3",
-      "properties": {
-        "cnr_id": "ComfyUI-Conditioning-Rebalance",
-        "ver": "4553b145043b3ed6818651e5e39a01614fc11fb6",
-        "Node name for S&R": "Switch",
-        "ue_properties": {
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {},
-          "version": "7.8"
-        }
-      },
-      "widgets_values": [
-        true
-      ],
-      "widgets_values_named": {
-        "switch": true
+        "unet_name": "minimax_h3_fl2va_int8_convrot.safetensors",
+        "weight_dtype": "default"
       }
     }
   ],
@@ -1229,74 +1025,34 @@
       "MODEL"
     ],
     [
-      41,
-      19,
-      0,
-      20,
-      0,
-      "MODEL"
-    ],
-    [
-      45,
-      1,
-      0,
-      21,
-      0,
-      "MODEL"
-    ],
-    [
-      46,
-      21,
-      0,
-      19,
-      0,
-      "MODEL"
-    ],
-    [
-      49,
-      23,
+      75,
+      27,
       0,
       17,
       0,
       "MODEL"
     ],
     [
-      51,
-      23,
+      76,
+      27,
       0,
       10,
       0,
       "MODEL"
     ],
     [
-      53,
-      20,
-      0,
-      23,
-      1,
-      "MODEL"
-    ],
-    [
-      56,
+      79,
       1,
       0,
-      25,
+      32,
       0,
       "MODEL"
     ],
     [
-      58,
-      25,
+      80,
+      32,
       0,
       27,
-      0,
-      "MODEL"
-    ],
-    [
-      59,
-      27,
-      0,
-      23,
       0,
       "MODEL"
     ]
@@ -1304,12 +1060,12 @@
   "groups": [
     {
       "id": 1,
-      "title": "Turbo - CK - SOL",
+      "title": "VDN + FFN (2-4 chunks more=slower but less vram)",
       "bounding": [
-        -522.406231182756,
-        -205.7540984519784,
-        316.2701276934923,
-        690.178544935866
+        -115.96952819274922,
+        -437.6833426060655,
+        513.2602950292564,
+        623.0659083037991
       ],
       "color": "#3f789e",
       "flags": {}
@@ -1319,10 +1075,10 @@
   "extra": {
     "ue_links": [],
     "ds": {
-      "scale": 0.658845000000014,
+      "scale": 0.45000000000000234,
       "offset": [
-        1059.5004925788512,
-        871.8133371598251
+        1526.7440633627652,
+        1382.221412213826
       ]
     },
     "links_added_by_ue": [],
@@ -1332,5 +1088,8 @@
     "VHS_MetadataImage": true,
     "VHS_KeepIntermediate": true
   },
-  "version": 0.4
+  "version": 0.4,
+  "seed_widgets": {
+    "8": 0
+  }
 }

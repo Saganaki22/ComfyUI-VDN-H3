@@ -297,6 +297,15 @@ overlap.
   loaded base do not belong together (e.g. a 50-block stage on a different-depth
   model). Load the matching MiniMax-H3 base.
 - **"This MODEL already has VDN-H3 applied"** — chain the node once.
+- **`aimdo memory compile error`, or the process dying mid-step (comfy builds
+  from 2026-09-04, the "Comfy Compiler" update)** — comfy's new model compiler /
+  malloc-graph planner (comfy commits `804eb551`, which also removed a MiniMax
+  memory workaround in `5c23fb7b`) cannot handle VDN-patched MiniMax-H3
+  forwards. The node handles this for you: applying VDN switches comfy's
+  compiler off while a VDN model is loaded, and hands it back the moment the
+  model is unloaded, so non-VDN workflows keep it (console lines mark both).
+  Manual equivalents: launch comfy with `--disable-comfy-compiler`, or use a
+  comfy build older than 2026-09-04.
 - **OOM** — keep `branch_weights: auto` (default; it picks `stream` under memory
   pressure), use `lora_mode: merge`, tiled VAE decode, shorter clips, smaller
   resolution. **Cancelling mid-run:** VDN drops its own GPU cache on cancel so

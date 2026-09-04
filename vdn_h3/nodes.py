@@ -15,28 +15,60 @@ import vdn_h3.spec as spec
 _log = logging.getLogger("comfy.vdn")
 
 
+_COMPILER_DISABLED_BY_VDN = False
+
+
 def _disable_comfy_compiler_on_broken_builds():
     """Comfy builds from 2026-09-04 ship a model compiler + aimdo malloc-graph
     that hard-fails on patched MiniMax-H3 forwards (graph breaks raise
     'aimdo memory compile error'; some paths abort the process mid-step). The
-    node does not need that compiler, so on affected builds we switch it off for
-    this session -- the same effect as launching with --disable-comfy-compiler,
-    without asking anything of the user. No-op on builds without it."""
+    node does not need that compiler, so on affected builds we switch it off --
+    the same effect as launching with --disable-comfy-compiler, without asking
+    anything of the user. Scoped to VDN models only: the switch is handed back
+    the moment comfy unloads the VDN model (see _restore_compiler_on_unload),
+    so non-VDN workflows keep the compiler. No-op on builds without it.
+
+    Returns True when the compiler is off because of us."""
+    global _COMPILER_DISABLED_BY_VDN
     try:
         args = comfy.cli_args.args
-        if getattr(args, "disable_comfy_compiler", False):
-            return
         import comfy.model_prefetch
         # malloc_graph only exists on builds with the new compiler (2026-09-04+);
         # older builds never enter this branch.
         if not hasattr(comfy.model_prefetch, "malloc_graph"):
-            return
+            return False
+        if getattr(args, "disable_comfy_compiler", False):
+            return _COMPILER_DISABLED_BY_VDN
         args.disable_comfy_compiler = True
+        _COMPILER_DISABLED_BY_VDN = True
         _log.warning(
             "[vdn] this comfy build's model compiler crashes with VDN-H3 "
-            "(aimdo malloc-graph); disabling it for this session -- same as "
-            "launching with --disable-comfy-compiler. Remove this once comfy "
-            "fixes the compiler.")
+            "(aimdo malloc-graph); disabling it while a VDN model is loaded. "
+            "Remove this once comfy fixes the compiler.")
+        return True
+    except Exception:
+        return False
+
+
+def _restore_compiler_on_unload(new_model):
+    """Hand comfy's model compiler back when the VDN model leaves memory, so
+    other workflows keep it. comfy calls unpatch_model when it unloads a
+    model; wrap it one-shot on the returned patcher."""
+    global _COMPILER_DISABLED_BY_VDN
+    try:
+        args = comfy.cli_args.args
+        orig = new_model.unpatch_model
+
+        def unpatch_model(*a, **kw):
+            new_model.unpatch_model = orig
+            if _COMPILER_DISABLED_BY_VDN:
+                _COMPILER_DISABLED_BY_VDN = False
+                args.disable_comfy_compiler = False
+                _log.info("[vdn] VDN model unloaded; comfy model compiler "
+                          "re-enabled.")
+            return orig(*a, **kw)
+
+        new_model.unpatch_model = unpatch_model
     except Exception:
         pass
 
@@ -140,6 +172,8 @@ def _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
 
     new_model = model.clone()
     apply_vdn(new_model, state)
+    if _disable_comfy_compiler_on_broken_builds():
+        _restore_compiler_on_unload(new_model)
 
     wanted = {"default"}
     if apply_turbo_adapter:
@@ -174,8 +208,13 @@ class ApplyVDNH3:
     def INPUT_TYPES(cls):
         names = spec.list_vdn_checkpoints()
         return {"required": {
-            "model": ("MODEL",),
-            "vdn_checkpoint": (names or ["<place a VDN stage-... directory under models/vdn>"],),
+            "model": ("MODEL", {
+                "tooltip": "The MiniMax-H3 diffusion model to patch. Chain once, "
+                           "between the model loader and the sampler."}),
+            "vdn_checkpoint": (names or ["<place a VDN stage-... directory under models/vdn>"], {
+                "tooltip": "The VDN stage directory (models/vdn) holding the "
+                           "linear-branch weights and spec. Must match the loaded "
+                           "base (stage-dmd-* = 8-step distilled model)."}),
             "apply_turbo_adapter": ("BOOLEAN", {
                 "default": True,
                 "tooltip": "Apply the 'turbo' adapter when the checkpoint carries one "
@@ -191,8 +230,7 @@ class ApplyVDNH3:
                            "the validated model exactly. REQUIRED for 8-step DMD "
                            "checkpoints (stage-dmd-*): bypass's activation-space "
                            "rounding noise is amplified by the deep blocks and "
-                           "visibly degrades output."}),
-            "branch_weights": (["auto", "stream", "cache_gpu"], {
+                           "visibly degrades output."}),            "branch_weights": (["auto", "stream", "cache_gpu"], {
                 "default": "auto",
                 "tooltip": "auto (default): cache_gpu when the free VRAM after the "
                            "base load exceeds 1.5x the stage size + 4 GiB headroom, "
@@ -210,7 +248,8 @@ class ApplyVDNH3:
                            "when free VRAM >= stage + 10 GiB headroom, else "
                            "transient (v1.3.1 allocation pattern, peak VRAM "
                            "priority on small cards). on/off override."}),
-            "verbose": ("BOOLEAN", {"default": False}),
+            "verbose": ("BOOLEAN", {"default": False, "tooltip": "Log the applied "
+                        "adapters and the per-forward layout to the console."}),
             "attention_backend": (["grouped", "flex"], {
                 "default": "grouped",
                 "tooltip": "How the windowed softmax runs. grouped: one dense SDPA "
@@ -246,8 +285,13 @@ class ApplyVDNH3Advanced:
     def INPUT_TYPES(cls):
         names = spec.list_vdn_checkpoints()
         return {"required": {
-            "model": ("MODEL",),
-            "vdn_checkpoint": (names or ["<place a VDN stage-... directory under models/vdn>"],),
+            "model": ("MODEL", {
+                "tooltip": "The MiniMax-H3 diffusion model to patch. Chain once, "
+                           "between the model loader and the sampler."}),
+            "vdn_checkpoint": (names or ["<place a VDN stage-... directory under models/vdn>"], {
+                "tooltip": "The VDN stage directory (models/vdn) holding the "
+                           "linear-branch weights and spec. Must match the loaded "
+                           "base (stage-dmd-* = 8-step distilled model)."}),
             "apply_turbo_adapter": ("BOOLEAN", {
                 "default": True,
                 "tooltip": "Apply the 'turbo' adapter when the checkpoint carries "
@@ -262,10 +306,33 @@ class ApplyVDNH3Advanced:
                 "default": "merge",
                 "tooltip": "merge required for 8-step DMD checkpoints; see the "
                            "base node's tooltip."}),
-            "branch_weights": (["auto", "stream", "cache_gpu"], {"default": "auto"}),
-            "retain_buffers": (["auto", "on", "off"], {"default": "auto"}),
-            "verbose": ("BOOLEAN", {"default": False}),
-            "attention_backend": (["grouped", "flex"], {"default": "grouped"}),
+            "branch_weights": (["auto", "stream", "cache_gpu"], {
+                "default": "auto",
+                "tooltip": "auto (default): cache_gpu when the free VRAM after the "
+                           "base load exceeds 1.5x the stage size + 4 GiB headroom, "
+                           "else stream (prefers the int8_convrot stage file under "
+                           "memory pressure). stream: branch weights move to the "
+                           "GPU per block per step with a one-block lookahead "
+                           "prefetch (safe on small cards). cache_gpu: resident on "
+                           "the GPU after the first step (faster; keep ~4.3 GB "
+                           "VRAM free)."}),
+            "retain_buffers": (["auto", "on", "off"], {
+                "default": "auto",
+                "tooltip": "Retained branch scratch/banks (scan banks, delta "
+                           "solve, window gather, q/k/v copies + prefetch) trade "
+                           "~0.5-1 GiB VRAM for churn-free steps. auto: retain "
+                           "when free VRAM >= stage + 10 GiB headroom, else "
+                           "transient (v1.3.1 allocation pattern, peak VRAM "
+                           "priority on small cards). on/off override."}),
+            "verbose": ("BOOLEAN", {"default": False, "tooltip": "Log the applied "
+                        "adapters and the per-forward layout to the console."}),
+            "attention_backend": (["grouped", "flex"], {
+                "default": "grouped",
+                "tooltip": "How the windowed softmax runs. grouped: one dense SDPA "
+                           "per window group (portable, exact). flex: the whole "
+                           "pattern as one compiled FlexAttention kernel over the "
+                           "full sequence (faster on long clips; first run compiles, "
+                           "falls back to grouped if compile fails)."}),
         }, "optional": {
             "window_radius": ("INT", {
                 "default": 1, "min": 0, "max": 8,
@@ -292,7 +359,9 @@ class ApplyVDNH3Advanced:
                            "epilogue, state gather, frame-major q store, and the "
                            "bidirectional scan as one CUDA-graph replay). Same "
                            "math; falls back to eager if compile fails. First run "
-                           "compiles."}),
+                           "compiles. Known to drift on 8-step DMD stages "
+                           "(stage-dmd-*) on torch 2.10 -- ablation use only, "
+                           "keep off for final renders (a warning is logged)."}),
         }}
 
     RETURN_TYPES = ("MODEL",)

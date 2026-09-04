@@ -220,6 +220,13 @@ fp8 线性层 + FA4/flex 内核的组合。本移植的单卡收益应对标约 
   加载的基座不匹配(例如 50 块的 stage 用在不同深度的模型上)。请加载匹配的
   MiniMax-H3 基座。
 - **"This MODEL already has VDN-H3 applied"** —— 该节点只能串接一次。
+- **`aimdo memory compile error`,或采样中途进程直接崩溃(2026-09-04 之后
+  的 comfy,即引入 "Comfy Compiler" 的版本)** —— comfy 新增的模型编译器 /
+  malloc-graph 内存规划器无法处理 VDN 改写后的 MiniMax-H3 前向(comfy 提交
+  `804eb551`,同批 `5c23fb7b` 还移除了一处 MiniMax 内存规避)。节点会自动处理:
+  应用 VDN 时临时关闭 comfy 编译器,VDN 模型被卸载时立刻恢复,非 VDN 工作流
+  不受影响(控制台有对应日志)。手动等效方案:启动参数加
+  `--disable-comfy-compiler`,或使用 2026-09-04 之前的 comfy 版本。
 - **OOM** —— 用 `branch_weights: stream`(默认)、`lora_mode: merge`、更短的
   片段或更小的分辨率。**中途取消**:VDN 会在取消时清掉自己的 GPU 缓存,让重跑
   从干净状态开始;如果是基座模型因显存压力被挤到内存,重跑前手动释放一次
