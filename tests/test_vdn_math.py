@@ -1,7 +1,7 @@
 """Numerical verification of the VDN-H3 port against naive reference implementations.
 
 Run with ComfyUI's venv python:
-    <ComfyUI>/venv/Scripts/python.exe custom_nodes/ComfyUI-VDN/tests/test_vdn_math.py
+    <ComfyUI>/venv/Scripts/python.exe custom_nodes/ComfyUI-VDN-H3/tests/test_vdn_math.py
 """
 import math
 import sys
@@ -92,8 +92,10 @@ def test_delta_scan():
     b_raw = torch.randn(F_, H, D, D) * 0.3
     text = torch.randn(H, D, D) * 0.2
 
+    S = 48
     for name, backend in (("vdn_solve", B.VdnDelta(None)),
-                          ("sana_scaled", B.SanaDelta(S := 48))):
+                          ("sana_scaled", B.SanaDelta(S)),
+                          ("vdn_scaled", B.VdnScaledDelta(S))):
         with torch.no_grad():
             trans, inj = backend.factor_apply(alpha, a_raw, b_raw)
             # step-by-step recurrence (the official step_ref spelling)
@@ -124,6 +126,14 @@ def test_delta_scan():
     assert (trans.float() - trans_want).abs().max() < 1e-4
     assert (inj - inj_want).abs().max() < 1e-4
     print("  vdn_solve closed form: ok")
+
+    # vdn_scaled closed form: the exact solve over SCALED statistics,
+    # (I + A/S)^-1 with B pre-scaled by c = 1/sqrt(S)
+    inv = torch.linalg.inv(a32 / S + eye)
+    trans, inj = B.VdnScaledDelta(S).factor_apply(alpha, a_raw, b_raw)
+    assert (trans.float() - alpha.unsqueeze(-1) * inv).abs().max() < 1e-4
+    assert (inj - (b_raw.float() / math.sqrt(S)) @ inv).abs().max() < 1e-4
+    print("  vdn_scaled closed form: ok")
 
 
 def test_gather():
@@ -158,6 +168,13 @@ def test_gather():
         err = (got[t] - want).abs().max().item()
         assert err < 1e-4, f"frame {t}: {err}"
     print("  gather vs naive bridge: ok")
+
+    # fast_kernels runs the same arithmetic as one compiled kernel
+    fused = B.gather_linear_state(prefix, suffix, alpha, bounds, bridge="alpha",
+                                  text_state=text, fuse=True)
+    err = (fused - got).abs().max().item()
+    assert err < 1e-5, f"fused gather: {err}"
+    print("  gather fused/eager: ok")
 
 
 def test_adapter_fold():

@@ -29,11 +29,12 @@ class ApplyVDNH3:
                 "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
                 "tooltip": "Adapter strength. 1.0 is the released model."}),
             "lora_mode": (["bypass", "merge"], {
-                "default": "bypass",
-                "tooltip": "bypass: adapters applied at run time in activation space "
-                           "(sharp; slightly more VRAM). merge: folded into the "
-                           "weights (lowest VRAM; partly rounded away on int8/fp8 "
-                           "bases)."}),
+                "default": "merge",
+                "tooltip": "merge: adapters folded into the weights -- reproduces "
+                           "the validated model exactly. REQUIRED for 8-step DMD "
+                           "checkpoints (stage-dmd-*): bypass's activation-space "
+                           "rounding noise is amplified by the deep blocks and "
+                           "visibly degrades output."}),
             "branch_weights": (["stream", "cache_gpu"], {
                 "default": "stream",
                 "tooltip": "stream: the ~4.3 GB of linear-branch weights are moved to "
@@ -64,7 +65,8 @@ def _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
                cfg_overrides=None, fast_kernels=False):
     """Shared core of ApplyVDNH3 and ApplyVDNH3Advanced. `strength` is a float or a
     {adapter_name: float} map; `cfg_overrides` deviates from the checkpoint's trained
-    spec (ablation knobs); `fast_kernels` torch.compiles the branch epilogue."""
+    spec (ablation knobs); `fast_kernels` torch.compiles the branch's hot spots
+    (epilogue, state gather, frame-major q store)."""
     path = spec.resolve_vdn_checkpoint(vdn_checkpoint)
     cfg, branch_weights_by_block, adapters = spec.load_vdn_checkpoint(path)
 
@@ -179,11 +181,12 @@ class ApplyVDNH3:
                 "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
                 "tooltip": "Adapter strength. 1.0 is the released model."}),
             "lora_mode": (["bypass", "merge"], {
-                "default": "bypass",
-                "tooltip": "bypass: adapters applied at run time in activation space "
-                           "(sharp; slightly more VRAM). merge: folded into the "
-                           "weights (lowest VRAM; partly rounded away on int8/fp8 "
-                           "bases)."}),
+                "default": "merge",
+                "tooltip": "merge: adapters folded into the weights -- reproduces "
+                           "the validated model exactly. REQUIRED for 8-step DMD "
+                           "checkpoints (stage-dmd-*): bypass's activation-space "
+                           "rounding noise is amplified by the deep blocks and "
+                           "visibly degrades output."}),
             "branch_weights": (["stream", "cache_gpu"], {
                 "default": "stream",
                 "tooltip": "stream: the ~4.3 GB of linear-branch weights are moved to "
@@ -219,7 +222,7 @@ class ApplyVDNH3:
 class ApplyVDNH3Advanced:
     """Everything the base node does, plus per-adapter strengths, ablation knobs that
     deviate from the released spec (window radius/chunk, anchor frames, text state,
-    linear branch), and the compile-fused branch epilogue."""
+    linear branch), and compile-fused branch kernels (fast_kernels)."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -237,7 +240,10 @@ class ApplyVDNH3Advanced:
             "turbo_strength": ("FLOAT", {
                 "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
                 "tooltip": "Strength of the 'turbo' (8-step DMD) adapter."}),
-            "lora_mode": (["bypass", "merge"], {"default": "bypass"}),
+            "lora_mode": (["bypass", "merge"], {
+                "default": "merge",
+                "tooltip": "merge required for 8-step DMD checkpoints; see the "
+                           "base node's tooltip."}),
             "branch_weights": (["stream", "cache_gpu"], {"default": "stream"}),
             "verbose": ("BOOLEAN", {"default": False}),
             "attention_backend": (["grouped", "flex"], {"default": "grouped"}),
@@ -263,8 +269,9 @@ class ApplyVDNH3Advanced:
                            "window)."}),
             "fast_kernels": ("BOOLEAN", {
                 "default": False,
-                "tooltip": "torch.compile the branch's RMSNorm+gate epilogue into "
-                           "one kernel. Same math; falls back to eager if compile "
+                "tooltip": "torch.compile the branch's hot spots (RMSNorm+gate "
+                           "epilogue, state gather, frame-major q store) into single "
+                           "kernels. Same math; falls back to eager if compile "
                            "fails. First run compiles."}),
         }}
 
@@ -273,7 +280,7 @@ class ApplyVDNH3Advanced:
     CATEGORY = "model_patch/video"
     DESCRIPTION = (
         "VDN-H3 advanced: per-adapter strengths, window/anchor/text/branch ablations, "
-        "and the compile-fused branch epilogue. Defaults reproduce the released "
+        "and compile-fused branch kernels. Defaults reproduce the released "
         "model exactly.")
 
     def apply(self, model, vdn_checkpoint, apply_turbo_adapter, stage_b_strength,

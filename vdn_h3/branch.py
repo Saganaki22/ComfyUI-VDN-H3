@@ -11,6 +11,7 @@ Everything here is eager PyTorch -- no Triton, no torch.compile, no CUDA kernels
 Numerics follow the reference inference bodies: A statistics in fp32 (TF32 GEMM), the
 recurrence in fp32 via preallocated banks, bf16 features and readout.
 """
+import collections
 import logging
 import math
 
@@ -56,7 +57,33 @@ class SanaDelta:
         return transition, injection
 
 
-DELTA_BACKENDS = {"vdn_solve": VdnDelta, "sana_scaled": SanaDelta}
+class VdnScaledDelta(VdnDelta):
+    """Exact joint solve WITH SANA's key scaling:
+    S_out = (S_in Diag(D) + cB)(I + c^2 A)^-1, c = 1/sqrt(S).
+
+    A control arm, kept for interpretability, not to train with: once c^2 = 1/S
+    forces trace(c^2 A) <= 1, the exact inverse and the first-order truncation
+    (I - c^2 A) are very nearly the same operator. spec.py accepts the rule, so
+    a checkpoint that names it must find it here."""
+
+    def __init__(self, tokens_per_frame):
+        super().__init__(tokens_per_frame)
+        self.inv_tokens = 1.0 / tokens_per_frame              # c^2
+        self.inv_sqrt_tokens = self.inv_tokens ** 0.5         # c
+
+    def factor_apply(self, alpha, a_raw, b_raw):
+        a32 = a_raw.float() * self.inv_tokens
+        eye = torch.eye(a32.shape[-1], device=a32.device,
+                        dtype=torch.float32).expand_as(a32)
+        chol = torch.linalg.cholesky(a32 + eye)
+        inv = torch.cholesky_solve(eye.contiguous(), chol)
+        transition = alpha.unsqueeze(-1) * inv
+        injection = (b_raw.float() * self.inv_sqrt_tokens) @ inv
+        return transition.to(a_raw.dtype), injection.to(b_raw.dtype)
+
+
+DELTA_BACKENDS = {"vdn_solve": VdnDelta, "sana_scaled": SanaDelta,
+                  "vdn_scaled": VdnScaledDelta}
 
 TEXT_STATE_SCALE = 0.5
 
@@ -99,6 +126,28 @@ def frame_statistics(kf, vf, beta, a_fp32=True):
         return a, b
 
 
+# ------------------------------------------------------- compile small helpers --
+
+_COMPILED_CACHE = {}
+_COMPILED_BROKEN = set()
+
+
+def _run_compiled(key, body, *args, **kwargs):
+    """torch.compile(body, dynamic=False), built once per key, with a permanent
+    eager fallback on failure -- the same policy linear_epilogue already uses:
+    same math, one rounding at the store instead of one per op, just slower."""
+    if key in _COMPILED_BROKEN:
+        return body(*args, **kwargs)
+    try:
+        if key not in _COMPILED_CACHE:
+            _COMPILED_CACHE[key] = torch.compile(body, dynamic=False)
+        return _COMPILED_CACHE[key](*args, **kwargs)
+    except Exception as e:
+        _COMPILED_BROKEN.add(key)
+        _log.warning("[vdn] compile of %s failed (%s); using eager", key, e)
+        return body(*args, **kwargs)
+
+
 # ---------------------------------------------------------------------- scans --
 
 def run_scans(backend, alpha, a_raw, b_raw, text_state=None):
@@ -125,13 +174,15 @@ def run_scans(backend, alpha, a_raw, b_raw, text_state=None):
         return prefix, suffix
 
 
-_GATHER_INDEX_CACHE = {}
+MAX_CACHED_GATHERS = 64
+_GATHER_INDEX_CACHE = collections.OrderedDict()
 
 
 def gather_indices(bounds, num_frames, device):
     key = (tuple(bounds), num_frames, str(device))
     hit = _GATHER_INDEX_CACHE.get(key)
     if hit is not None:
+        _GATHER_INDEX_CACHE.move_to_end(key)
         return hit
     last_before = torch.tensor([lo for lo, _ in bounds], device=device) - 1
     first_after = torch.tensor([hi for _, hi in bounds], device=device) + 1
@@ -145,44 +196,64 @@ def gather_indices(bounds, num_frames, device):
         frames=torch.arange(num_frames, device=device),
     )
     _GATHER_INDEX_CACHE[key] = hit
+    while len(_GATHER_INDEX_CACHE) > MAX_CACHED_GATHERS:
+        _GATHER_INDEX_CACHE.popitem(last=False)
     return hit
 
 
-def gather_linear_state(prefix_states, suffix_states, alpha, bounds, bridge="alpha",
-                        text_state=None, out_dtype=None):
-    """The state of everything OUTSIDE the softmax window, in the query frame's frame
-    of reference: prefix_states[lo-1] + suffix_states[hi+1], decayed in by the product
-    of alpha over the window span (bridge="alpha"), with the scan start (the text
-    state, when given) read by out-of-range sides."""
-    assert bridge in ("alpha", "none")
-    num_frames = prefix_states.shape[0]
-    device = prefix_states.device
-    idx = gather_indices(bounds, num_frames, device)
+def _gather_body(prefix_states, suffix_states, alpha, text_state, bridge_alpha,
+                 out_dtype, before_idx, after_idx, has_before, has_after,
+                 bridge_before, bridge_after, frames):
+    """The arithmetic of gather_linear_state, with the index tensors already built.
 
-    state_before = prefix_states[idx["before_idx"]]
-    state_after = suffix_states[idx["after_idx"]]
+    Split out so fast_kernels can hand the whole thing to one compiled kernel:
+    eager it is two gathers, two wheres, two multiplies and a combine over the
+    fp32 state bank -- seven passes for what is one read of each side and one
+    store."""
+    state_before = prefix_states[before_idx]
+    state_after = suffix_states[after_idx]
     if text_state is not None:
         text_state = text_state.to(state_before.dtype)
-        state_before = torch.where(idx["has_before"].view(-1, 1, 1, 1), state_before,
+        state_before = torch.where(has_before.view(-1, 1, 1, 1), state_before,
                                    text_state)
-        state_after = torch.where(idx["has_after"].view(-1, 1, 1, 1), state_after,
+        state_after = torch.where(has_after.view(-1, 1, 1, 1), state_after,
                                   text_state)
-    if bridge == "alpha":
+    if bridge_alpha:
         log_alpha = torch.log(alpha.clamp_min(1e-12))
         log_prefix = torch.cat([torch.zeros_like(log_alpha[:1]), log_alpha.cumsum(0)])
         alpha_from_before = torch.exp(
-            log_prefix[idx["frames"] + 1] - log_prefix[idx["bridge_before"]])
+            log_prefix[frames + 1] - log_prefix[bridge_before])
         alpha_from_after = torch.exp(
-            log_prefix[idx["bridge_after"]] - log_prefix[idx["frames"]])
+            log_prefix[bridge_after] - log_prefix[frames])
         # alpha is per KEY channel: broadcast over d_v, not d_k
         state_before = state_before * alpha_from_before.unsqueeze(2)
         state_after = state_after * alpha_from_after.unsqueeze(2)
     if text_state is not None:
         out = state_before + state_after
     else:
-        out = (state_before * idx["has_before"].view(-1, 1, 1, 1)
-               + state_after * idx["has_after"].view(-1, 1, 1, 1))
+        out = (state_before * has_before.view(-1, 1, 1, 1)
+               + state_after * has_after.view(-1, 1, 1, 1))
     return out if out_dtype is None else out.to(out_dtype)
+
+
+def gather_linear_state(prefix_states, suffix_states, alpha, bounds, bridge="alpha",
+                        text_state=None, out_dtype=None, fuse=False):
+    """The state of everything OUTSIDE the softmax window, in the query frame's frame
+    of reference: prefix_states[lo-1] + suffix_states[hi+1], decayed in by the product
+    of alpha over the window span (bridge="alpha"), with the scan start (the text
+    state, when given) read by out-of-range sides.
+
+    fuse=True (fast_kernels) runs the arithmetic as one compiled kernel, keyed on
+    (bridge, text_state?, out_dtype); same math, rounded once at the store."""
+    assert bridge in ("alpha", "none")
+    num_frames = prefix_states.shape[0]
+    idx = gather_indices(bounds, num_frames, prefix_states.device)
+    if not fuse:
+        return _gather_body(prefix_states, suffix_states, alpha, text_state,
+                            bridge == "alpha", out_dtype, **idx)
+    key = ("gather", bridge, text_state is not None, str(out_dtype))
+    return _run_compiled(key, _gather_body, prefix_states, suffix_states, alpha,
+                         text_state, bridge == "alpha", out_dtype, **idx)
 
 
 # -------------------------------------------------------------------- features --
@@ -192,6 +263,18 @@ def _activate(tokens, l2norm):
     if l2norm:
         return F.normalize(x, dim=-1, eps=1e-6).to(x.dtype)
     return x
+
+
+def _activate_fhsd_body(tokens, l2norm, num_frames, per_frame):
+    """_activate storing q frame-major, [F, H, S, d] instead of [F*S, H, d].
+
+    The readout below is a frame-major batched matmul; storing q this way (the
+    official inference body) means the matmul consumes it without a permute-in
+    copy. Only pays off compiled, where the strided store rides the activation
+    kernel for free -- so callers gate it behind fast_kernels."""
+    x = _activate(tokens, l2norm)
+    heads, dim = x.shape[-2], x.shape[-1]
+    return x.view(num_frames, per_frame, heads, dim).permute(0, 2, 1, 3).contiguous()
 
 
 def _temporal_shift(x, w, kernel):
@@ -299,11 +382,16 @@ class LinearBranch:
         self._backend = None
         self._backend_key = None
 
-    def _features(self, w, q_raw, k_raw, v_raw, num_frames, frame_size):
+    def _features(self, w, q_raw, k_raw, v_raw, num_frames, frame_size, q_fhsd=False):
         """[ShortConv ->] SiLU [-> L2Norm for q/k]. NoPE: the branch consumes raw
-        pre-RoPE features."""
+        pre-RoPE features. q_fhsd (fast_kernels) stores q frame-major [F, H, S, d]
+        straight out of the fused activation; n/a when q itself is convolved."""
         conv = self.short_conv
-        query = _activate(q_raw, l2norm=True)
+        if q_fhsd and not (conv and "q" in conv):
+            query = _run_compiled(("act_fhsd", True), _activate_fhsd_body, q_raw,
+                                  True, num_frames, q_raw.shape[0] // num_frames)
+        else:
+            query = _activate(q_raw, l2norm=True)
         if conv and "k" in conv:
             key = conv_features(k_raw, w["short_conv.k_sp.weight"],
                                 w["short_conv.k_tm.weight"], num_frames, frame_size,
@@ -385,8 +473,8 @@ class LinearBranch:
         backend = self._delta_backend(tokens_per_frame)
         shape = (num_frames, tokens_per_frame, n_heads, head_dim)
 
-        query, key, value = self._features(w, *qkv_raw, num_frames, frame_size)
-        query_by_frame = query.view(shape)                       # [F, S, H, d]
+        query, key, value = self._features(w, *qkv_raw, num_frames, frame_size,
+                                           q_fhsd=self.fuse_epilogue)
         key_by_frame = key.view(shape).permute(0, 2, 1, 3)       # [F, H, S, d]
         value_by_frame = value.view(shape).permute(0, 2, 1, 3)
         beta = torch.sigmoid(F.linear(xv, w["beta_proj.weight"]))
@@ -409,13 +497,17 @@ class LinearBranch:
                              + w["output_gate.up.bias"])
         linear_state = gather_linear_state(
             prefix_states, suffix_states, alpha, bounds, bridge=self.bridge,
-            text_state=text_state, out_dtype=gate.dtype)
+            text_state=text_state, out_dtype=gate.dtype, fuse=self.fuse_epilogue)
         del prefix_states, suffix_states
 
         # q is [F, S, H, d]; the readout is frame-major, so align to [F, H, S, dk]
-        # before the batched matmul (the official inference body stores q fhsd)
-        readout = torch.matmul(query_by_frame.permute(0, 2, 1, 3),
-                               linear_state.transpose(-1, -2))
+        # before the batched matmul. fast_kernels stored q frame-major already
+        # (the official inference body), skipping the permute-in copy.
+        if query.dim() == 4:
+            query_fhsd = query                                   # [F, H, S, d]
+        else:
+            query_fhsd = query.view(shape).permute(0, 2, 1, 3)
+        readout = torch.matmul(query_fhsd, linear_state.transpose(-1, -2))
         return linear_epilogue(readout, w["norm.weight"], gate,
                                w["norm.weight"].new_tensor(1e-6).item(),
                                fuse=self.fuse_epilogue)

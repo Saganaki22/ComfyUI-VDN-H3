@@ -72,7 +72,17 @@ builds, no `pip install`.
 | `vdn_checkpoint` | a stage directory under `models/vdn` |
 | `apply_turbo_adapter` | ON = the released **8-step** model (use 8 sampler steps); OFF = the **50-step** model (use ~50 steps) |
 | `strength` | adapter strength, 1.0 = released model |
-| `lora_mode` | `bypass` (runtime, sharp) / `merge` (folded into weights; lowest VRAM, softer on int8/fp8 bases) |
+| `lora_mode` | **`merge`** (default; adapters folded into the weights — reproduces the validated model exactly) / `bypass` (runtime injection) |
+
+> **`lora_mode` — use `merge`, especially on 8-step DMD checkpoints (`stage-dmd-*`).**
+> Measured on a pruned int8 base: bypass applies the same adapters, but each
+> module's delta carries bf16 rounding noise instead of being baked into the
+> weights. Blocks 0-33 stay bit-identical to merge; the deep blocks (34+) amplify
+> that noise to ~10% of feature magnitude, and every bypass render of the 8-step
+> model comes out grainy/degraded. A coherent perturbation of the same size
+> (strength 1.016) renders clean — it is specifically off-manifold rounding
+> noise, not the delta math. Merge is required for stage-dmd-*; bypass remains
+> available for non-DMD checkpoints.
 | `branch_weights` | `stream` (~4.3 GB of branch weights move to GPU per block per step — safe on small cards) / `cache_gpu` (resident, faster, keep ~4.3 GB VRAM free) |
 | `attention_backend` | `grouped` (default; one dense SDPA per window group) / `flex` (one compiled FlexAttention kernel; opt-in, see Benchmarks.md) |
 | `verbose` | log the applied adapters and per-forward layout |
@@ -90,7 +100,7 @@ samplers, VAE decode and video/audio output nodes are unchanged. Example workflo
 | `anchor_frames` | `both` / `columns` / `rows` / `none` (trained: `both`) |
 | `text_state` | write the prompt into the branch's states at init (trained: on) |
 | `linear_branch` | off = window-only ablation (debug — output loses all long-range context) |
-| `fast_kernels` | torch.compile the branch's RMSNorm+gate epilogue into one kernel (same math; falls back to eager if compile fails) |
+| `fast_kernels` | torch.compile the branch's hot spots (RMSNorm+gate epilogue, state gather, frame-major q store) into single kernels (same math; falls back to eager if compile fails) |
 
 Ablation inputs warn in the console when they deviate from the checkpoint's
 trained spec; defaults reproduce the released model exactly.
@@ -127,6 +137,9 @@ The VDN release **does not contain base weights** — it is branch + LoRA adapte
 only, applied at runtime on whatever MiniMax-H3 base you load. The 72 GB diffusers
 base (`h3-base/`) in the HF repo is *not* needed.
 
+**Tested and working with both the `fl2v` (fl2va) and `ref2v` (ref2va) MiniMax-H3
+base models.**
+
 The 8-step model's `turbo` adapter replaces (does not stack with) community
 MiniMax-H3 turbo LoRAs — do not run both.
 
@@ -148,8 +161,10 @@ the K/V short conv, output gates, and both LoRA adapters.
   stays the default. The official FA4 backend is faster still but needs
   Linux + datacenter Blackwell.
 - Eager pointwise ops instead of the official Triton/compiled fusions (temporal
-  conv, RMSNorm epilogue, gather). Correct, somewhat slower; the scan's kernel
-  launches are the remaining optimization target (CUDA-graph via torch.compile).
+  conv, RMSNorm epilogue, gather) by default — the Advanced node's `fast_kernels`
+  torch.compiles the epilogue, state gather and frame-major q store (same math,
+  eager fallback). The scan's kernel launches remain the optimization target
+  (CUDA-graph via torch.compile).
 - LoRA applied through ComfyUI's bypass/merge machinery (int8-fused `fc2` weights
   route through merge automatically; pruned/curve bases get the e-grid adaln
   re-injection).

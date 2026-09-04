@@ -251,6 +251,12 @@ def make_vdn_forward(attn, state, block_index):
                 q, k, v, heads, mask=None, skip_reshape=True,
                 transformer_options=transformer_options).squeeze(0)
 
+        # The roped/raw projections are dead from here (~3 GiB at H3 scale, held
+        # alive by views of the qkv_proj buffer); free them before the gate, the
+        # out projection and the branch readout (the official inference body dels
+        # them for the same reason). The branch works from the clones taken above.
+        del q, k, v, q_raw, k_raw
+
         w = state.weights_on(block_index, device, dtype)
         if cfg["enable_softmax_gate"]:
             gate = torch.sigmoid(F.linear(x, w["softmax_gate.up.weight"],

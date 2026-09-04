@@ -31,7 +31,7 @@ def _dense_mask(seq, vs, ve, nf, tpf, lo, hi, anchor_frames, device):
     return allowed
 
 
-def test_partition(anchor_frames):
+def _check_partition(anchor_frames):
     torch.manual_seed(0)
     vs, tpf, nf, heads, dim = 5, 8, 12, 3, 16
     seq = vs + nf * tpf + 3
@@ -53,7 +53,13 @@ def test_partition(anchor_frames):
     print(f"flex-mask partition [{anchor_frames}]: PASS")
 
 
-if __name__ == "__main__":
+def test_partition():
+    """Pytest entry point: a test function with parameters reads them as fixture
+    requests, so the four anchor modes loop here instead of taking an argument."""
     for mode in ("none", "columns", "rows", "both"):
-        test_partition(mode)
+        _check_partition(mode)
+
+
+if __name__ == "__main__":
+    test_partition()
     print("ALL PASS")

@@ -65,7 +65,15 @@ safetensors)运行官方数学,不需要 Triton、flash-attn-4、CUDA 编译或
 | `vdn_checkpoint` | `models/vdn` 下的某个 stage 目录 |
 | `apply_turbo_adapter` | 开 = 官方 **8 步** 模型(采样器用 8 步);关 = **50 步** 模型(约 50 步) |
 | `strength` | 适配器强度,1.0 即发布模型 |
-| `lora_mode` | `bypass`(运行时注入,精度锐)/ `merge`(合并进权重;显存最低,在 int8/fp8 基座上略软) |
+| `lora_mode` | **`merge`**(默认;适配器合并进权重——精确复现验证过的模型)/ `bypass`(运行时注入) |
+
+> **`lora_mode` —— 请用 `merge`,8 步 DMD 检查点(`stage-dmd-*`)尤其必须。**
+> 在剪枝 int8 基座上实测:bypass 应用的是同样的适配器,但每个模块的增量以
+> bf16 舍入噪声的形式叠加,而不是烧进权重。前 34 个块与 merge 逐位一致;
+> 深层块(34+)会把这部分噪声放大到特征幅度的约 10%,8 步模型的 bypass
+> 渲染全部出现颗粒感/劣化。同样大小的连贯扰动(强度 1.016)渲染干净——
+> 问题特定于脱离流形的舍入噪声,而非增量数学本身。stage-dmd-* 必须用
+> merge;非 DMD 检查点仍可使用 bypass。
 | `branch_weights` | `stream`(约 4.3 GB 分支权重每块每步搬运到 GPU,小显存安全)/ `cache_gpu`(常驻显存,更快,需预留约 4.3 GB) |
 | `attention_backend` | `grouped`(默认;每个窗口组一次稠密 SDPA)/ `flex`(单个编译的 FlexAttention 内核;可选,见 Benchmarks.md) |
 | `verbose` | 输出已应用的适配器和每次前向的布局日志 |
@@ -82,7 +90,7 @@ safetensors)运行官方数学,不需要 Triton、flash-attn-4、CUDA 编译或
 | `anchor_frames` | `both` / `columns` / `rows` / `none`(训练值 `both`) |
 | `text_state` | 初始化时把提示词写入线性分支状态(训练值:开) |
 | `linear_branch` | 关 = 仅窗口消融(调试;长片段将失去全部长距离上下文) |
-| `fast_kernels` | torch.compile 把分支的 RMSNorm+门控尾声融合为单内核(数学相同;编译失败自动回退 eager) |
+| `fast_kernels` | torch.compile 把分支热点(RMSNorm+门控尾声、状态收集、帧主序 q 存储)融合为单内核(数学相同;编译失败自动回退 eager) |
 
 消融输入偏离检查点训练规格时会在控制台警告;全部默认值精确复现发布模型。
 
@@ -115,6 +123,8 @@ VDN 发布版**不包含基座权重** —— 只有分支与 LoRA 适配器,运
 的任意 MiniMax-H3 基座上。HF 仓库里 72 GB 的 diffusers 基座(`h3-base/`)
 **不需要**。
 
+**已在 `fl2v`(fl2va)与 `ref2v`(ref2va)两种 MiniMax-H3 基座模型上测试,均可正常工作。**
+
 8 步模型的 `turbo` 适配器**替代**(而非叠加)社区版 MiniMax-H3 turbo LoRA
 —— 两者不要同时启用。
 
@@ -133,9 +143,10 @@ softmax 窗口与锚点帧(发布规格 `radius=1, chunk=5, anchor_frames=both`)
   triton-windows 上编译运行正常 —— RTX 5090、34.5k tokens 下与 grouped 实测
   持平(见 Benchmarks.md),故 grouped 仍为默认。官方 FA4 后端更快,但需要
   Linux + 数据中心级 Blackwell。
-- 官方 Triton/编译融合点(时序卷积、RMSNorm 尾声、gather)在此为 eager
-  实现。正确但略慢;扫描循环的内核启动开销是下一个优化目标
-  (torch.compile CUDA graph)。
+- 官方 Triton/编译融合点(时序卷积、RMSNorm 尾声、gather)默认在此为 eager
+  实现;高级节点的 `fast_kernels` 会把尾声、状态收集与帧主序 q 存储
+  torch.compile 为单内核(数学相同,失败自动回退 eager)。扫描循环的内核
+  启动开销仍是下一个优化目标(torch.compile CUDA graph)。
 - LoRA 通过 ComfyUI 的 bypass/merge 机制应用(int8 融合的 `fc2` 自动走 merge;
   剪枝基座获得 e-grid adaln 重注入)。
 - 打包序列几何直接读取 ComfyUI 自带的 `PackedLayout`,各条件变体

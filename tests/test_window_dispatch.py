@@ -35,43 +35,73 @@ def _stub_optimized_attention(q, k, v, heads, mask=None, **kwargs):
 
 
 def _install_stub():
+    """Shadow comfy.ldm.modules.attention with the recording stub. Returns a
+    restore() callable: the shadowing must be SCOPED to the dispatch check, not
+    module level -- pytest imports the package __init__ (which pulls the real
+    comfy.ldm.modules.attention through hybrid.py) during test setup, and a
+    session-wide stub breaks that import."""
     for name in ("comfy", "comfy.ldm", "comfy.ldm.modules"):
         if name not in sys.modules:
             sys.modules[name] = types.ModuleType(name)
     stub = types.ModuleType("comfy.ldm.modules.attention")
     stub.optimized_attention = _stub_optimized_attention
+    # When the real comfy was already imported (another test in the session),
+    # `from comfy.ldm.modules import attention` resolves the ATTRIBUTE on the
+    # parent package before the sys.modules fallback -- shadow both, and put
+    # whatever was there back on restore.
+    prev_mod = sys.modules.get("comfy.ldm.modules.attention")
+    parent = sys.modules["comfy.ldm.modules"]
+    prev_attr = getattr(parent, "attention", None)
     sys.modules["comfy.ldm.modules.attention"] = stub
+    parent.attention = stub
+
+    def restore():
+        if prev_mod is None:
+            sys.modules.pop("comfy.ldm.modules.attention", None)
+        else:
+            sys.modules["comfy.ldm.modules.attention"] = prev_mod
+        if prev_attr is None:
+            parent.__dict__.pop("attention", None)
+        else:
+            parent.attention = prev_attr
+
+    return restore
 
 
 def test_dispatch():
     from vdn_h3.window import window_bounds, window_softmax_grouped
 
-    torch.manual_seed(0)
-    video_start, tokens, frames, heads, dim = 5, 8, 12, 2, 16
-    seq = video_start + frames * tokens + 3
-    q = torch.randn(seq, heads, dim)
-    k = torch.randn(seq, heads, dim)
-    v = torch.randn(seq, heads, dim)
-    to = {"anything": True}
+    restore = _install_stub()
+    try:
+        calls.clear()
 
-    got = window_softmax_grouped(q, k, v, video_start, seq - 3, frames, tokens,
-                                 window_bounds(frames, 1, 5), dim ** -0.5,
-                                 anchor_frames="both", transformer_options=to)
-    assert len(calls) >= 3, "expected several grouped dispatch calls"
-    for c in calls:
-        assert c["heads"] == heads
-        assert c["transformer_options"] is to, "transformer_options not passed through"
-        assert c["q_shape"][2] == heads * dim and c["q_shape"][0] == 1
+        torch.manual_seed(0)
+        video_start, tokens, frames, heads, dim = 5, 8, 12, 2, 16
+        seq = video_start + frames * tokens + 3
+        q = torch.randn(seq, heads, dim)
+        k = torch.randn(seq, heads, dim)
+        v = torch.randn(seq, heads, dim)
+        to = {"anything": True}
 
-    # exactness: routed result matches a direct SDPA reference per call scale
-    want = window_softmax_grouped(q, k, v, video_start, seq - 3, frames, tokens,
-                                  window_bounds(frames, 1, 5), dim ** -0.5,
-                                  anchor_frames="both")
-    assert torch.allclose(got, want, atol=1e-5), "dispatch changed the math"
-    print(f"dispatch routing: PASS ({len(calls)} grouped calls, math identical)")
+        got = window_softmax_grouped(q, k, v, video_start, seq - 3, frames, tokens,
+                                     window_bounds(frames, 1, 5), dim ** -0.5,
+                                     anchor_frames="both", transformer_options=to)
+        assert len(calls) >= 3, "expected several grouped dispatch calls"
+        for c in calls:
+            assert c["heads"] == heads
+            assert c["transformer_options"] is to, "transformer_options not passed through"
+            assert c["q_shape"][2] == heads * dim and c["q_shape"][0] == 1
+
+        # exactness: routed result matches a direct SDPA reference per call scale
+        want = window_softmax_grouped(q, k, v, video_start, seq - 3, frames, tokens,
+                                      window_bounds(frames, 1, 5), dim ** -0.5,
+                                      anchor_frames="both")
+        assert torch.allclose(got, want, atol=1e-5), "dispatch changed the math"
+        print(f"dispatch routing: PASS ({len(calls)} grouped calls, math identical)")
+    finally:
+        restore()
 
 
 if __name__ == "__main__":
-    _install_stub()
     test_dispatch()
     print("ALL PASS")

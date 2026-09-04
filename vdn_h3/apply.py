@@ -183,17 +183,34 @@ def _install_injection(new_model, hooks):
     a stale hook as module.forward, and the next load captures that hook as its
     own "original" -- infinite self-recursion on the second run (observed as
     RecursionError after a model reload). LIFO eject always restores the true
-    forward, so load/unload cycles are stable."""
+    forward, so load/unload cycles are stable.
+
+    STACK-PROOFING: every Apply-VDN run clones the patcher but every clone shares
+    ONE inner model, and ComfyUI ejects a clone's injections only when that clone
+    is UNLOADED -- on a big-VRAM card nothing unloads between runs, so re-running
+    with any widget changed (e.g. flipping lora_mode) would otherwise stack
+    ANOTHER full set of bypass hooks on the same modules: 2x, 3x the LoRA delta
+    per rerun, progressively grainy/fried output (merge is immune -- weight
+    patches go through backup/restore). The live hook set is tracked on the
+    shared inner model and ejected before a new set goes in."""
     if not hooks:
         return
+    owner = new_model.model      # shared by every clone of this model
 
     def inject_all(model_patcher):
+        old = getattr(owner, "_vdn_live_hooks", None)
+        if old:
+            for hook in reversed(old):
+                hook.eject()
         for hook in hooks:
             hook.inject()
+        owner._vdn_live_hooks = hooks
 
     def eject_all(model_patcher):
         for hook in reversed(hooks):
             hook.eject()
+        if getattr(owner, "_vdn_live_hooks", None) is hooks:
+            owner._vdn_live_hooks = None
 
     injection = comfy.patcher_extension.PatcherInjection(
         inject=inject_all, eject=eject_all)

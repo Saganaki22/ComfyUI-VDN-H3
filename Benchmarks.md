@@ -1,4 +1,4 @@
-# Benchmarks — ComfyUI-VDN v1.0.0
+# Benchmarks — ComfyUI-VDN-H3
 
 ## Rig
 
@@ -27,7 +27,27 @@ default.
 8-step render completed end-to-end with audio; used for correctness bring-up
 (per-frame pixel statistics verified healthy).
 
-## Verification status at v1.0.0
+## Verification status
+
+### v1.2.0
+
+- Unit tests (10/10): existing coverage plus the `vdn_scaled` delta rule (scan +
+  closed form vs `(I + A/S)^-1`), fused-vs-eager state-gather parity, frame-major
+  q-store parity, and an end-to-end `LinearBranch.readout` fast_kernels-vs-eager
+  parity check. Pytest harness hardened (session `conftest.py` path setup, the
+  attention-dispatch stub scoped to its test, parametrized anchor loop).
+- E2E A/B matrix (headless server, seed 42, 512x320/56f, 8 steps): full base
+  merge/bypass x fast_kernels off/on, pruned base merge/bypass — all six outputs
+  visually verified good. The fast_kernels runs confirmed the compiled path
+  actually executed (epilogue + state gather + frame-major q store: the expected
+  small single-rounding divergence from eager, quality intact).
+- **merge vs bypass at a fixed seed gives different but equally valid videos**
+  (~26/255 mean per-pixel diff): merge rounds the LoRA deltas into the int8
+  weight grid, bypass applies them at full precision per forward, and 8 steps of
+  sampling amplifies that into a different trajectory. Not a bug — judge modes by
+  quality, not by seed-matching. On int8 bases bypass is the truer application.
+
+### v1.0.0
 
 - Unit tests: window partition (grouped vs reference, 6 geometry/anchor combos),
   delta-rule scans and vdn_solve vs step-by-step recurrence, bridge/gather vs

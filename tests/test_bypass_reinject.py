@@ -13,9 +13,10 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(_ROOT))
-sys.path.insert(0, str(_ROOT / "custom_nodes" / "ComfyUI-VDN"))
+_COMFYUI_ROOT = Path(__file__).resolve().parents[3]  # the ComfyUI checkout
+_PACKAGE = Path(__file__).resolve().parents[1]       # this package, any folder name
+sys.path.insert(0, str(_COMFYUI_ROOT))
+sys.path.insert(0, str(_PACKAGE))
 
 import comfy.model_management
 import comfy.weight_adapter
@@ -34,6 +35,7 @@ def _adapter():
 class _Patcher:
     def __init__(self):
         self.injections = {}
+        self.model = types.SimpleNamespace()  # the shared inner model (clone-shared)
 
     def set_injections(self, key, value):
         self.injections[key] = value
