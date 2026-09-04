@@ -37,6 +37,9 @@ What you don't get: the headline numbers. The official 74.5× figure combines 8-
 |:---:|:---:|
 | <video src="https://github.com/user-attachments/assets/89cc7155-ca89-459e-9996-5b5f6bfcd284" controls></video> | <video src="https://github.com/user-attachments/assets/5cc9906e-acec-4c61-a3b9-17c79153945b" controls></video> |
 
+<details>
+<summary><strong>VDN-H3 bf16 vs INT8 ConvRot — A/B videos (same seed &amp; settings) — click to expand</strong></summary>
+
 | VDN-H3 bf16 stage, er_sde / beta — 8 steps, 1280x736, 1:51 | VDN-H3 INT8 ConvRot stage, er_sde / beta — 8 steps, 1280x736, 1:35 |
 |:---:|:---:|
 | <video src="https://github.com/Saganaki22/ComfyUI-VDN-H3/releases/download/exp-int8-media/ab_bf16_8step_er_sde_beta.mp4" controls loop></video> | <video src="https://github.com/Saganaki22/ComfyUI-VDN-H3/releases/download/exp-int8-media/ab_int8convrot_8step_er_sde_beta.mp4" controls loop></video> |
@@ -45,6 +48,8 @@ Same seed and settings on both sides (merge, `cache_gpu`); only the stage
 differs. The INT8 stage's branch matmuls run 2.7x faster; end-to-end ~1.2x
 faster in this single-run A/B. Identical output.
 [Details + timing table](#bf16-vs-int8-convrot--ab-same-seed--settings).
+
+</details>
 
 **Ref2V example (INT8 ConvRot stage)** — ref2va base, 8 steps, er_sde / beta,
 768x768:
