@@ -14,6 +14,7 @@ recurrence in fp32 via preallocated banks, bf16 features and readout.
 import collections
 import logging
 import math
+import warnings
 
 import torch
 import torch.nn.functional as F
@@ -174,10 +175,12 @@ def _run_compiled(key, body, *args, _mode=None, **kwargs):
     try:
         if key not in _COMPILED_CACHE:
             _COMPILED_CACHE[key] = torch.compile(body, dynamic=False, mode=_mode)
-        return _COMPILED_CACHE[key](*args, **kwargs)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return _COMPILED_CACHE[key](*args, **kwargs)
     except Exception as e:
         _COMPILED_BROKEN.add(key)
-        _log.warning("[vdn] compile of %s failed (%s); using eager", key, e)
+        _log.debug("[vdn] compile of %s failed (%s); using eager", key, e)
         return body(*args, **kwargs)
 
 

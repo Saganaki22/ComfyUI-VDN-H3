@@ -15,6 +15,7 @@ one SDPA per frame instead of per chunk).
 import collections
 import logging
 import os
+import warnings
 
 import torch
 import torch.nn.functional as F
@@ -238,13 +239,18 @@ def _log_backend_once(q4, k4, v4, scale):
                   "VDN_H3_WINDOW_SDPA)", forced)
         return
     chosen = "math"
-    for name in _BACKEND_PRIORITY:
-        try:
-            _sdpa_call(q4, k4, v4, scale, backend=name)
-            chosen = name
-            break
-        except Exception:
-            continue
+    # torch emits a UserWarning per rejected backend while probing ("not used
+    # because ...", "runtime disabled"); users don't need the spam -- the info
+    # line below reports the winner.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for name in _BACKEND_PRIORITY:
+            try:
+                _sdpa_call(q4, k4, v4, scale, backend=name)
+                chosen = name
+                break
+            except Exception:
+                continue
     _log.info("[vdn] window SDPA backend: %s (priority flash -> cuDNN -> "
               "mem-efficient; override with VDN_H3_WINDOW_SDPA=flash|cudnn|"
               "mem_efficient)", chosen)
