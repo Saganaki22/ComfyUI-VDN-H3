@@ -104,7 +104,7 @@ builds, no `pip install`.
 > (strength 1.016) renders clean — it is specifically off-manifold rounding
 > noise, not the delta math. Merge is required for stage-dmd-*; bypass remains
 > available for non-DMD checkpoints.
-| `branch_weights` | `stream` (~4.3 GB of branch weights move to GPU per block per step — safe on small cards) / `cache_gpu` (resident, faster, keep ~4.3 GB VRAM free) |
+| `branch_weights` | `stream` (weights stream from disk straight to GPU per block per step — nothing extra held in RAM; safe on small cards) / `cache_gpu` (resident, faster, keep ~4.3 GB VRAM free) |
 | `attention_backend` | `grouped` (default; one dense SDPA per window group) / `flex` (one compiled FlexAttention kernel; opt-in, see Benchmarks.md) |
 | `verbose` | log the applied adapters and per-forward layout |
 

@@ -93,7 +93,7 @@ safetensors)运行官方数学,不需要 Triton、flash-attn-4、CUDA 编译或
 > 渲染全部出现颗粒感/劣化。同样大小的连贯扰动(强度 1.016)渲染干净——
 > 问题特定于脱离流形的舍入噪声,而非增量数学本身。stage-dmd-* 必须用
 > merge;非 DMD 检查点仍可使用 bypass。
-| `branch_weights` | `stream`(约 4.3 GB 分支权重每块每步搬运到 GPU,小显存安全)/ `cache_gpu`(常驻显存,更快,需预留约 4.3 GB) |
+| `branch_weights` | `stream`(权重按块逐步从磁盘直读进 GPU——不在内存中额外驻留;小显存安全)/ `cache_gpu`(常驻显存,更快,需预留约 4.3 GB) |
 | `attention_backend` | `grouped`(默认;每个窗口组一次稠密 SDPA)/ `flex`(单个编译的 FlexAttention 内核;可选,见 Benchmarks.md) |
 | `verbose` | 输出已应用的适配器和每次前向的布局日志 |
 
