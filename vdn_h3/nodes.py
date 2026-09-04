@@ -15,6 +15,32 @@ import vdn_h3.spec as spec
 _log = logging.getLogger("comfy.vdn")
 
 
+def _disable_comfy_compiler_on_broken_builds():
+    """Comfy builds from 2026-09-04 ship a model compiler + aimdo malloc-graph
+    that hard-fails on patched MiniMax-H3 forwards (graph breaks raise
+    'aimdo memory compile error'; some paths abort the process mid-step). The
+    node does not need that compiler, so on affected builds we switch it off for
+    this session -- the same effect as launching with --disable-comfy-compiler,
+    without asking anything of the user. No-op on builds without it."""
+    try:
+        args = comfy.cli_args.args
+        if getattr(args, "disable_comfy_compiler", False):
+            return
+        import comfy.model_prefetch
+        # malloc_graph only exists on builds with the new compiler (2026-09-04+);
+        # older builds never enter this branch.
+        if not hasattr(comfy.model_prefetch, "malloc_graph"):
+            return
+        args.disable_comfy_compiler = True
+        _log.warning(
+            "[vdn] this comfy build's model compiler crashes with VDN-H3 "
+            "(aimdo malloc-graph); disabling it for this session -- same as "
+            "launching with --disable-comfy-compiler. Remove this once comfy "
+            "fixes the compiler.")
+    except Exception:
+        pass
+
+
 def _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
                attention_backend, verbose, apply_turbo_adapter=True,
                cfg_overrides=None, fast_kernels=False, retain_buffers="auto"):
@@ -22,6 +48,7 @@ def _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
     {adapter_name: float} map; `cfg_overrides` deviates from the checkpoint's trained
     spec (ablation knobs); `fast_kernels` torch.compiles the branch's hot spots
     (epilogue, state gather, frame-major q store, bidirectional scan)."""
+    _disable_comfy_compiler_on_broken_builds()
     path = spec.resolve_vdn_checkpoint(vdn_checkpoint)
     prefer_int8 = False
     retain = True
