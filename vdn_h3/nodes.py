@@ -6,6 +6,8 @@ import os
 import folder_paths
 
 import comfy.model_management
+import comfy.model_prefetch
+import comfy.cli_args
 
 from vdn_h3.apply import apply_adapters
 from vdn_h3.hybrid import VDNState, apply_vdn
@@ -39,7 +41,6 @@ def _disable_comfy_compiler_on_broken_builds():
         # probe the package for the submodule, not the module name.
         if not hasattr(args, "disable_comfy_compiler"):
             return False
-        import comfy.model_prefetch
         aimdo = getattr(comfy.model_prefetch, "comfy_aimdo", None)
         if aimdo is None or not hasattr(aimdo, "malloc_graph"):
             return False
