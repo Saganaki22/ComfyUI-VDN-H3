@@ -30,16 +30,21 @@ Findings, stated plainly:
   (the baseline's first-run figure includes a cold page cache; against its warm
   repeats the gain is ~9%). Transient mode keeps most of it (the prefetcher,
   not the buffers, is the larger part of the remaining gap).
-- **Peak VRAM is NOT lower — it is ~+1.1 GiB over baseline in BOTH modes.** The
-  transient run (v1.3.1's exact allocation pattern: per-call banks/scratch, no
-  prefetch) peaks identical to retained (13.08 vs 13.08), so the retained
-  buffers are NOT the cause — the delta reproduces without them and is not
-  attributed to a specific buffer. comfy's dynamic-loading staging is identical
-  across runs (DiT 32427 MB staged in all). Until this is pinned, the honest
-  release line is: **~15% faster at the headline config, +~1.1 GiB sampling
-  peak, output bit-identical.** On cards where 1 GiB is the difference between
-  fitting and thrashing, use `retain_buffers: off` — it measured equal-or-lower
-  peak than retained at both test sizes.
+- **Peak VRAM: allocator snapshots show the peak working set is UNCHANGED.**
+  CUDA allocator history was recorded for baseline and optimized runs (native
+  allocator, `--disable-cuda-malloc`, identical 145f workflow) and the traces
+  replayed: baseline peak live set 11.875 GiB vs optimized 11.926 GiB
+  (+0.05 GiB), with every major allocation group matching 1:1 (4.1 GiB
+  readout working set, 2.19 GiB samplers, 3x0.55 GiB conv features, streamed
+  weights — all equal; the optimized run's peak set merely has more/smaller
+  blocks, 332 vs 79, same bytes). The ~+1.0 GiB that
+  `torch.cuda.max_memory_allocated()` reports for the optimized code does not
+  correspond to any allocation stack in the traces — it is a counter-level
+  effect of the mid-run peak reset + backend accounting, not retained memory.
+  Snapshots: `output/base145.pickle` / `new145.pickle` (viewable in
+  pytorch.org/memory_viz). Release line: **~15% faster at the headline config,
+  peak working set unchanged at the allocation level (counter reads ~+1 GiB
+  with no corresponding allocation), output bit-identical.**
 - **Parity at the headline config: bit-identical.** Both modes vs baseline:
   latent PSNR ∞ (zero MSE), frame LPIPS 0.0000 over all 158 decoded frames,
   seed 42.
