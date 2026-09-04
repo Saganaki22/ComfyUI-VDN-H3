@@ -145,7 +145,7 @@ base models.**
 **Pre-quantized INT8 stage available:** a ready-made INT8 ConvRot version of the
 8-step stage (identical outputs, branch 4.3 -> 2.2 GB, ~4.7 GB lower peak VRAM
 while loading) is at
-[drbaph/stage-dmd-step-250-int8_convrot_comfyui](https://huggingface.co/drbaph/stage-dmd-step-250-int8_convrot_comfyui) —
+[drbaph/vdn-minimax-h3-int8-convrot-comfyui](https://huggingface.co/drbaph/vdn-minimax-h3-int8-convrot-comfyui) —
 drop it into `models/vdn/` and select it in `vdn_checkpoint`. Loading
 pre-quantized stages requires this branch; you can also quantize any stage
 yourself with `tools/quantize_vdn_branch_int8.py`.

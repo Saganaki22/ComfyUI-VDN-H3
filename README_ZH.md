@@ -129,7 +129,7 @@ VDN 发布版**不包含基座权重** —— 只有分支与 LoRA 适配器,运
 
 **提供预量化的 INT8 stage:** 8 步 stage 的 INT8 ConvRot 版本(输出一致,分支
 4.3 -> 2.2 GB,加载峰值显存低约 4.7 GB)已发布于
-[drbaph/stage-dmd-step-250-int8_convrot_comfyui](https://huggingface.co/drbaph/stage-dmd-step-250-int8_convrot_comfyui) ——
+[drbaph/vdn-minimax-h3-int8-convrot-comfyui](https://huggingface.co/drbaph/vdn-minimax-h3-int8-convrot-comfyui) ——
 放入 `models/vdn/` 后在 `vdn_checkpoint` 中选择即可。加载预量化 stage 需要本
 分支;也可以用 `tools/quantize_vdn_branch_int8.py` 自行量化任意 stage。
 
