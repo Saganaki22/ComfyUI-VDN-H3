@@ -23,6 +23,7 @@ import torch
 import torch.nn.functional as F
 
 import comfy.ldm.minimax.model as minimax_model
+import comfy.cli_args
 import comfy.model_management
 import comfy.quant_ops
 from comfy.ldm.modules.attention import AttentionTensorContainer, optimized_attention
@@ -282,6 +283,13 @@ def make_layout_wrapper(state):
     """DIFFUSION_MODEL wrapper: publish the layout, run the model, clear it."""
 
     def wrap(executor, *args, **kwargs):
+        # comfy builds with the model compiler crash on VDN forwards (the
+        # malloc-graph planner cannot trace them); nodes.py flips the switch
+        # off when the compiler stack exists, and we scope it to exactly this
+        # forward so non-VDN workflows keep it.
+        owns_switch = getattr(state, "owns_compiler_switch", False)
+        if owns_switch:
+            comfy.cli_args.args.disable_comfy_compiler = True
         state.layout = layout_from_payload(kwargs.get("minimax_payload"),
                                            args[0], args[2], state.cfg)
         state.forwards += 1
@@ -309,6 +317,8 @@ def make_layout_wrapper(state):
             torch.cuda.empty_cache()
             raise
         finally:
+            if owns_switch:
+                comfy.cli_args.args.disable_comfy_compiler = False
             state.layout = None
 
     return wrap

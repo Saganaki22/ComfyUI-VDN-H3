@@ -301,13 +301,11 @@ overlap.
   from 2026-09-04, the "Comfy Compiler" update)** — comfy's new model compiler /
   malloc-graph planner (comfy commits `804eb551`, which also removed a MiniMax
   memory workaround in `5c23fb7b`) cannot handle VDN-patched MiniMax-H3
-  forwards. The node handles this for you: applying VDN switches comfy's
-  compiler off while a VDN model is loaded, and hands it back the moment the
-  model is unloaded, so non-VDN workflows keep it (console lines mark both).
-  One caveat: if a non-VDN workflow runs while the VDN model is still loaded
-  in memory (no unload in between), the compiler stays off for that run too —
-  unload first to hand it back. Restarting comfy also resets it.
-  Manual equivalents: launch comfy with `--disable-comfy-compiler`, or use a
+  forwards. The node handles this for you: while a VDN workflow samples, comfy's
+  compiler is switched off, and it flips back on the moment each step ends —
+  nothing persists, no unload or restart needed, non-VDN workflows always run
+  with comfy's compiler active (a single console warning marks it). Manual
+  equivalents: launch comfy with `--disable-comfy-compiler`, or use a
   comfy build older than 2026-09-04.
 - **OOM** — keep `branch_weights: auto` (default; it picks `stream` under memory
   pressure), use `lora_mode: merge`, tiled VAE decode, shorter clips, smaller

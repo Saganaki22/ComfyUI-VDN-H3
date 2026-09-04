@@ -18,6 +18,7 @@ _log = logging.getLogger("comfy.vdn")
 
 
 _COMPILER_DISABLED_BY_VDN = False
+_COMPILER_WARNED = False
 
 
 def _disable_comfy_compiler_on_broken_builds():
@@ -26,12 +27,12 @@ def _disable_comfy_compiler_on_broken_builds():
     'aimdo memory compile error'; some paths abort the process mid-step). The
     node does not need that compiler, so on affected builds we switch it off --
     the same effect as launching with --disable-comfy-compiler, without asking
-    anything of the user. Scoped to VDN models only: the switch is handed back
-    the moment comfy unloads the VDN model (see _restore_compiler_on_unload),
-    so non-VDN workflows keep the compiler. No-op on builds without it.
+    anything of the user. hybrid.py scopes the switch to VDN forwards only
+    (restored in a finally after every step), so non-VDN workflows keep it.
+    No-op on builds without the compiler stack.
 
-    Returns True when the compiler is off because of us."""
-    global _COMPILER_DISABLED_BY_VDN
+    Returns True when the switch is ours to manage."""
+    global _COMPILER_DISABLED_BY_VDN, _COMPILER_WARNED
     try:
         args = comfy.cli_args.args
         # The compiler stack (comfy 2026-09-04, "Introduce Comfy Compiler") is
@@ -48,36 +49,15 @@ def _disable_comfy_compiler_on_broken_builds():
             return _COMPILER_DISABLED_BY_VDN
         args.disable_comfy_compiler = True
         _COMPILER_DISABLED_BY_VDN = True
-        _log.warning(
-            "[vdn] this comfy build's model compiler crashes with VDN-H3 "
-            "(aimdo malloc-graph); disabling it while a VDN model is loaded. "
-            "Remove this once comfy fixes the compiler.")
+        if not _COMPILER_WARNED:
+            _COMPILER_WARNED = True
+            _log.warning(
+                "[vdn] this comfy build's model compiler crashes with VDN-H3 "
+                "(aimdo malloc-graph); disabling it while VDN is sampling. "
+                "Remove this once comfy fixes the compiler.")
         return True
     except Exception:
         return False
-
-
-def _restore_compiler_on_unload(new_model):
-    """Hand comfy's model compiler back when the VDN model leaves memory, so
-    other workflows keep it. comfy calls unpatch_model when it unloads a
-    model; wrap it one-shot on the returned patcher."""
-    global _COMPILER_DISABLED_BY_VDN
-    try:
-        args = comfy.cli_args.args
-        orig = new_model.unpatch_model
-
-        def unpatch_model(*a, **kw):
-            new_model.unpatch_model = orig
-            if _COMPILER_DISABLED_BY_VDN:
-                _COMPILER_DISABLED_BY_VDN = False
-                args.disable_comfy_compiler = False
-                _log.info("[vdn] VDN model unloaded; comfy model compiler "
-                          "re-enabled.")
-            return orig(*a, **kw)
-
-        new_model.unpatch_model = unpatch_model
-    except Exception:
-        pass
 
 
 def _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
@@ -173,14 +153,13 @@ def _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
             "visible output on torch 2.10) -- ablation use only, do not use for "
             "final renders", os.path.basename(path))
     state = VDNState(vdn_checkpoint, cfg, branches, num_heads, head_dim)
+    state.owns_compiler_switch = _disable_comfy_compiler_on_broken_builds()
     state.retain_buffers = retain
     state.cache_gpu = branch_weights == "cache_gpu"
     state.softmax_backend = attention_backend
 
     new_model = model.clone()
     apply_vdn(new_model, state)
-    if _disable_comfy_compiler_on_broken_builds():
-        _restore_compiler_on_unload(new_model)
 
     wanted = {"default"}
     if apply_turbo_adapter:
