@@ -114,7 +114,7 @@ builds, no `pip install`.
 > (strength 1.016) renders clean — it is specifically off-manifold rounding
 > noise, not the delta math. Merge is required for stage-dmd-*; bypass remains
 > available for non-DMD checkpoints.
-| `branch_weights` | **`stream`** (default, v1.3.1 behavior; weights stream from disk straight to GPU per block per step, with a one-block lookahead prefetch — nothing extra held in RAM; safe on small cards) / `cache_gpu` (resident, faster, keep ~4.3 GB VRAM free) / `auto` (opt-in; picks `cache_gpu` when free VRAM after the base load exceeds 1.5x the stage size + 4 GiB headroom, else `stream`; prefers the int8_convrot stage file under memory pressure) |
+| `branch_weights` | **`auto`** (default; picks `cache_gpu` when free VRAM after the base load exceeds 1.5x the stage size + 4 GiB headroom, else `stream`; prefers the int8_convrot stage file under memory pressure) / `stream` (weights stream from disk straight to GPU per block per step, with a one-block lookahead prefetch — nothing extra held in RAM; safe on small cards) / `cache_gpu` (resident, faster, keep ~4.3 GB VRAM free) |
 | `attention_backend` | `grouped` (default; one dense SDPA per window group) / `flex` (one compiled FlexAttention kernel; opt-in, see Benchmarks.md) |
 | `verbose` | log the applied adapters and per-forward layout |
 
@@ -131,7 +131,7 @@ samplers, VAE decode and video/audio output nodes are unchanged. Example workflo
 | `anchor_frames` | `both` / `columns` / `rows` / `none` (trained: `both`) |
 | `text_state` | write the prompt into the branch's states at init (trained: on) |
 | `linear_branch` | off = window-only ablation (debug — output loses all long-range context) |
-| `fast_kernels` | torch.compile the branch's hot spots (RMSNorm+gate epilogue, state gather, frame-major q store, bidirectional scan as one CUDA-graph replay; falls back to eager if compile fails). **Known to drift on 8-step DMD stages (`stage-dmd-*`) on torch 2.10** — ulp-level bf16 rounding in the fused epilogue/gather that the distilled sampler amplifies. Ablation use only; keep it off for final renders (the node logs a warning). **Ignored on comfy builds where the default cudaMallocAsync allocator hard-aborts on the fused kernels** (process dies at step 1); the node skips it with a log line — add `--disable-cuda-malloc` to your launch to use fast_kernels there |
+| `fast_kernels` | torch.compile the branch's hot spots (RMSNorm+gate epilogue, state gather, frame-major q store, bidirectional scan as one CUDA-graph replay; falls back to eager if compile fails). **Known to drift on 8-step DMD stages (`stage-dmd-*`) on torch 2.10** — ulp-level bf16 rounding in the fused epilogue/gather that the distilled sampler amplifies. Ablation use only; keep it off for final renders (the node logs a warning) |
 
 Ablation inputs warn in the console when they deviate from the checkpoint's
 trained spec; defaults reproduce the released model exactly.
@@ -268,19 +268,19 @@ Full measurement data and verification status: [Benchmarks.md](Benchmarks.md).
 encoder + [int8_convrot VDN stage](https://huggingface.co/drbaph/vdn-minimax-h3-int8-convrot-comfyui))
 fits 736p on 12–16 GB without `--lowvram`. Avoid `--lowvram` if you can:
 measured cost is 20–40% sampling speed for the offload churn, and the int8
-stack doesn't need it at 736p. `branch_weights: stream` (the default) streams
-weights per block; on cards with headroom, `auto` or `cache_gpu` is faster.
+stack doesn't need it at 736p. Keep `branch_weights: auto` (default) — it
+picks `stream` automatically when VRAM is tight.
 
-**`retain_buffers` — opt-in speed.** The node can keep some branch scratch
-alive between blocks (scan banks, delta-solve scratch, window gather buffers,
-q/k/v copies) and prefetch the next weight block in stream mode. Retained,
-steps run without per-block allocation churn — measured ~15% faster than
-v1.3.1 at 1280x736/145f in stream mode; the measured peak increment is small
-(~0.1 GiB at 736p, none detected at 145f). v1.4.1 restores the v1.3.1
-defaults (`retain_buffers: off`, `branch_weights: stream`) after crash
-reports on some setups; `auto` retains when free VRAM ≥ stage size + 10 GiB
-headroom and falls back to the transient pattern otherwise, `on` forces it.
-On cards where it fits, `retain_buffers: on` is a free speedup.
+**`retain_buffers` — speed vs VRAM, resolved automatically.** The node keeps
+some branch scratch alive between blocks (scan banks, delta-solve scratch,
+window gather buffers, q/k/v copies) and prefetches the next weight block in
+stream mode. Retained, steps run without per-block allocation churn — measured
+~15% faster than v1.3.1 at 1280x736/145f in stream mode; the measured peak
+increment is small (~0.1 GiB at 736p, none detected at 145f). `auto` (the
+default) measures it for you: retain when free VRAM ≥ stage size + 10 GiB
+headroom, otherwise fall back to the transient v1.3.1 allocation pattern (and
+skip the prefetch stream) so small cards prioritize fitting over speed. `on`
+/ `off` override.
 
 **VAE decode VRAM spike.** Stock `VAEDecode` untiled is the decode-time VRAM
 spike at 768p+ or on long clips — it decodes every frame in one shot. Use a
@@ -297,8 +297,9 @@ overlap.
   loaded base do not belong together (e.g. a 50-block stage on a different-depth
   model). Load the matching MiniMax-H3 base.
 - **"This MODEL already has VDN-H3 applied"** — chain the node once.
-- **OOM** — keep `branch_weights: stream` (the default), use `lora_mode: merge`,
-  tiled VAE decode, shorter clips, smaller resolution. **Cancelling mid-run:** VDN drops its own GPU cache on cancel so
+- **OOM** — keep `branch_weights: auto` (default; it picks `stream` under memory
+  pressure), use `lora_mode: merge`, tiled VAE decode, shorter clips, smaller
+  resolution. **Cancelling mid-run:** VDN drops its own GPU cache on cancel so
   reruns start clean; if the *base model* itself was pushed host-side by VRAM
   pressure, free/unload it once (Manager → Free, an Unload node, or
   `POST /free`) — that residency belongs to comfy, not the node.

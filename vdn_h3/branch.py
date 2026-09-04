@@ -14,7 +14,6 @@ recurrence in fp32 via preallocated banks, bf16 features and readout.
 import collections
 import logging
 import math
-import os
 
 import torch
 import torch.nn.functional as F
@@ -164,36 +163,13 @@ def frame_statistics(kf, vf, beta, a_fp32=True):
 
 _COMPILED_CACHE = {}
 _COMPILED_BROKEN = set()
-_ALLOCATOR_NO_GRAPHS = None
-
-
-def _allocator_blocks_cudagraphs():
-    """cudaMallocAsync (comfy's default allocator) cannot capture CUDA graphs:
-    the failed capture is caught, but leaves the async pool in a state that can
-    abort the whole process later. Under that allocator we simply never try --
-    eager everywhere, byte-for-byte the v1.3.1 behavior."""
-    global _ALLOCATOR_NO_GRAPHS
-    if _ALLOCATOR_NO_GRAPHS is None:
-        blocked = False
-        try:
-            blocked = torch.cuda.get_allocator_backend() == "cudaMallocAsync"
-        except Exception:
-            blocked = False
-        if blocked and os.environ.get("VDN_H3_COMPILE_SCAN", "") != "1":
-            _log.warning(
-                "[vdn] cudaMallocAsync allocator detected: torch.compile disabled "
-                "(its graph capture can crash under this allocator); running eager, "
-                "same as v1.3.1. Launch comfy with --disable-cuda-malloc to enable it, "
-                "or set VDN_H3_COMPILE_SCAN=1 to force.")
-        _ALLOCATOR_NO_GRAPHS = blocked
-    return _ALLOCATOR_NO_GRAPHS
 
 
 def _run_compiled(key, body, *args, _mode=None, **kwargs):
     """torch.compile(body, dynamic=False), built once per key, with a permanent
     eager fallback on failure -- the same policy linear_epilogue already uses:
     same math, one rounding at the store instead of one per op, just slower."""
-    if key in _COMPILED_BROKEN or _allocator_blocks_cudagraphs():
+    if key in _COMPILED_BROKEN:
         return body(*args, **kwargs)
     try:
         if key not in _COMPILED_CACHE:
