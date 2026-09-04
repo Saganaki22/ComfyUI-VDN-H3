@@ -42,7 +42,7 @@ Attention** 线性分支,把平方级的长距离注意力替换为常数成本�
 **Ref2V 示例（INT8 ConvRot stage）** —— ref2va 基座，8 步，er_sde / beta，
 768x768：
 
-<video src="https://github.com/Saganaki22/ComfyUI-VDN-H3/releases/download/exp-int8-media/int8-ref2va-8step-vdn.mp4" controls loop></video>
+https://github.com/user-attachments/assets/65fd49e1-a4a3-4e28-9f3d-9dc8337354a7
 
 ### 相同种子
 
