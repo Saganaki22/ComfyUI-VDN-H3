@@ -31,15 +31,29 @@ class VdnDelta:
     def __init__(self, tokens_per_frame=None):
         pass
 
-    def factor_apply(self, alpha, a_raw, b_raw):
+    def factor_apply(self, alpha, a_raw, b_raw, retain=True):
+        # fp32 island (HARD RULE): every intermediate stays fp32; this is lifetime
+        # management only. Retained mode rotates the intermediates through ONE
+        # reused scratch; transient mode (VRAM pressure) allocates per call --
+        # the v1.3.1 pattern.
         a32 = a_raw.float()
         eye = torch.eye(a32.shape[-1], device=a32.device,
                         dtype=torch.float32).expand_as(a32)
-        chol = torch.linalg.cholesky(a32 + eye)
-        linv = torch.linalg.solve_triangular(chol, eye, upper=False, left=True)
+        if retain:
+            scratch = _delta_scratch(a32.shape, a32.device)
+        else:
+            scratch = torch.empty(a32.shape, dtype=torch.float32,
+                                  device=a32.device)
+        torch.add(a32, eye, out=scratch)                       # I + A
+        chol = torch.linalg.cholesky(scratch)
+        linv = torch.linalg.solve_triangular(chol, eye, upper=False, left=True,
+                                             out=scratch)
+        del chol
         inv = linv.transpose(-1, -2) @ linv
+        del linv                                               # scratch reference
         transition = alpha.unsqueeze(-1) * inv
         injection = b_raw.float() @ inv
+        del inv
         return transition.to(a_raw.dtype), injection.to(b_raw.dtype)
 
 
@@ -50,7 +64,7 @@ class SanaDelta:
         self.inv_tokens = 1.0 / tokens_per_frame
         self.inv_sqrt_tokens = self.inv_tokens ** 0.5
 
-    def factor_apply(self, alpha, a_raw, b_raw):
+    def factor_apply(self, alpha, a_raw, b_raw, retain=True):
         eye = torch.eye(a_raw.shape[-1], device=a_raw.device, dtype=a_raw.dtype)
         transition = alpha.unsqueeze(-1) * (eye - self.inv_tokens * a_raw)
         injection = self.inv_sqrt_tokens * b_raw
@@ -71,7 +85,7 @@ class VdnScaledDelta(VdnDelta):
         self.inv_tokens = 1.0 / tokens_per_frame              # c^2
         self.inv_sqrt_tokens = self.inv_tokens ** 0.5         # c
 
-    def factor_apply(self, alpha, a_raw, b_raw):
+    def factor_apply(self, alpha, a_raw, b_raw, retain=True):
         a32 = a_raw.float() * self.inv_tokens
         eye = torch.eye(a32.shape[-1], device=a32.device,
                         dtype=torch.float32).expand_as(a32)
@@ -86,6 +100,25 @@ DELTA_BACKENDS = {"vdn_solve": VdnDelta, "sana_scaled": SanaDelta,
                   "vdn_scaled": VdnScaledDelta}
 
 TEXT_STATE_SCALE = 0.5
+
+MAX_DELTA_SCRATCH = 4
+_DELTA_SCRATCH = collections.OrderedDict()
+
+
+def _delta_scratch(shape, device):
+    """ONE reusable [F, H, d, d] fp32 scratch for the delta-rule Cholesky solve
+    (I+A sum and the triangular solve rotate through it), instead of allocating
+    the intermediates per block per step. fp32 always -- lifetime reuse only."""
+    key = (tuple(shape), str(device))
+    hit = _DELTA_SCRATCH.get(key)
+    if hit is None:
+        hit = torch.empty(shape, dtype=torch.float32, device=device)
+        _DELTA_SCRATCH[key] = hit
+        while len(_DELTA_SCRATCH) > MAX_DELTA_SCRATCH:
+            _DELTA_SCRATCH.popitem(last=False)
+    else:
+        _DELTA_SCRATCH.move_to_end(key)
+    return hit
 
 
 # ------------------------------------------------------------- frame statistics --
@@ -132,7 +165,7 @@ _COMPILED_CACHE = {}
 _COMPILED_BROKEN = set()
 
 
-def _run_compiled(key, body, *args, **kwargs):
+def _run_compiled(key, body, *args, _mode=None, **kwargs):
     """torch.compile(body, dynamic=False), built once per key, with a permanent
     eager fallback on failure -- the same policy linear_epilogue already uses:
     same math, one rounding at the store instead of one per op, just slower."""
@@ -140,7 +173,7 @@ def _run_compiled(key, body, *args, **kwargs):
         return body(*args, **kwargs)
     try:
         if key not in _COMPILED_CACHE:
-            _COMPILED_CACHE[key] = torch.compile(body, dynamic=False)
+            _COMPILED_CACHE[key] = torch.compile(body, dynamic=False, mode=_mode)
         return _COMPILED_CACHE[key](*args, **kwargs)
     except Exception as e:
         _COMPILED_BROKEN.add(key)
@@ -150,17 +183,85 @@ def _run_compiled(key, body, *args, **kwargs):
 
 # ---------------------------------------------------------------------- scans --
 
-def run_scans(backend, alpha, a_raw, b_raw, text_state=None):
+MAX_SCAN_BANKS = 4
+_SCAN_BANKS = collections.OrderedDict()
+
+
+def _scan_banks(num_frames, state_shape, dtype, device, retain=True):
+    """The prefix/suffix state banks. Retained mode: allocated ONCE per
+    (F, H, dv, dk, device, dtype) and reused across blocks and steps (2xF
+    baddbmm `out=` targets no longer churn the allocator). Transient mode (VRAM
+    pressure): fresh per call -- the v1.3.1 pattern. LRU-capped; every call
+    fully rewrites both banks."""
+    if not retain:
+        prefix = torch.empty((num_frames, *state_shape), dtype=dtype,
+                             device=device)
+        return prefix, torch.empty_like(prefix)
+    key = (num_frames, tuple(state_shape), str(device), dtype)
+    hit = _SCAN_BANKS.get(key)
+    if hit is None:
+        prefix = torch.empty((num_frames, *state_shape), dtype=dtype, device=device)
+        hit = (prefix, torch.empty_like(prefix))
+        _SCAN_BANKS[key] = hit
+        while len(_SCAN_BANKS) > MAX_SCAN_BANKS:
+            _SCAN_BANKS.popitem(last=False)
+    else:
+        _SCAN_BANKS.move_to_end(key)
+    return hit
+
+
+def clear_scan_banks():
+    """Drop the reused scan banks and delta-solve scratch (and let compiled
+    variants go) so a cancelled run's buffers don't pin VRAM into the next one."""
+    _SCAN_BANKS.clear()
+    _DELTA_SCRATCH.clear()
+    for key in [k for k in _COMPILED_CACHE if isinstance(k, tuple) and k[:1] == ("scan",)]:
+        _COMPILED_CACHE.pop(key, None)
+
+
+def _scan_body(transitions, injections, start):
+    """The two recurrence sweeps as one functional body (no out= aliases), so
+    fast_kernels can hand the whole scan to torch.compile(reduce-overhead):
+    2xF per-frame baddbmm kernel launches become one CUDA-graph replay. Same
+    math as the eager loop; under cudagraphs the returned banks live in the
+    graph pool and are valid until the next compiled call of the same shape --
+    the gather consumes them before that can happen."""
+    num_frames = transitions.shape[0]
+    prefix = torch.empty((num_frames, *start.shape), dtype=injections.dtype,
+                         device=injections.device)
+    suffix = torch.empty_like(prefix)
+    state = start
+    for frame in range(num_frames):
+        state = torch.baddbmm(injections[frame], state, transitions[frame])
+        prefix[frame] = state
+    state = start
+    for frame in range(num_frames - 1, -1, -1):
+        state = torch.baddbmm(injections[frame], state, transitions[frame])
+        suffix[frame] = state
+    return prefix, suffix
+
+
+def run_scans(backend, alpha, a_raw, b_raw, text_state=None, fuse=False,
+              retain=True):
     """Forward/reverse state banks; the plain linear recurrence
-    state_t = state_{t-1} @ transition_t + injection_t, one baddbmm per frame."""
+    state_t = state_{t-1} @ transition_t + injection_t, one baddbmm per frame.
+
+    Eager writes into the reused banks (retained mode) or fresh per-call banks
+    (transient, VRAM pressure); fuse=True (fast_kernels) runs the scan as one
+    reduce-overhead compiled graph instead (latch-to-eager on failure)."""
     with torch.autocast(device_type=a_raw.device.type, enabled=False):
-        transitions, injections = backend.factor_apply(alpha, a_raw, b_raw)
+        transitions, injections = backend.factor_apply(alpha, a_raw, b_raw,
+                                                       retain=retain)
         num_frames = transitions.shape[0]
         start = (torch.zeros_like(injections[0]) if text_state is None
                  else text_state.to(injections.dtype))
-        prefix = torch.empty((num_frames, *start.shape), dtype=injections.dtype,
-                             device=injections.device)
-        suffix = torch.empty_like(prefix)
+        if fuse:
+            key = ("scan", num_frames, *start.shape, str(injections.device),
+                   str(injections.dtype))
+            return _run_compiled(key, _scan_body, transitions, injections, start,
+                                 _mode="reduce-overhead")
+        prefix, suffix = _scan_banks(num_frames, start.shape, injections.dtype,
+                                     injections.device, retain=retain)
         state = start
         for frame in range(num_frames):
             torch.baddbmm(injections[frame], state, transitions[frame],
@@ -369,7 +470,8 @@ class LinearBranch:
     """
 
     def __init__(self, w, num_heads, head_dim, delta_rule="vdn_solve", bridge="alpha",
-                 a_fp32=True, short_conv=("k", "v"), enable_text_state=True):
+                 a_fp32=True, short_conv=("k", "v"), enable_text_state=True,
+                 retain_buffers=True):
         self.w = w
         self.num_heads = num_heads
         self.head_dim = head_dim
@@ -379,6 +481,7 @@ class LinearBranch:
         self.enable_text_state = enable_text_state
         self.delta_rule = delta_rule
         self.fuse_epilogue = False
+        self.retain_buffers = retain_buffers
         self._backend = None
         self._backend_key = None
 
@@ -430,7 +533,8 @@ class LinearBranch:
         backend = self._delta_backend(length)
         with torch.autocast(device_type=a.device.type, enabled=False):
             ones = torch.ones(1, n_heads, head_dim, device=a.device, dtype=a.dtype)
-            _, injection = backend.factor_apply(ones, a, b)
+            _, injection = backend.factor_apply(ones, a, b,
+                                            retain=self.retain_buffers)
         return TEXT_STATE_SCALE * injection[0]
 
     def readout(self, w, xv, q_raw, k_raw, v_raw, num_frames, tokens_per_frame,
@@ -491,7 +595,9 @@ class LinearBranch:
 
         text_state = self._text_state(w, text_x, text_k_raw, text_v_raw)
         prefix_states, suffix_states = run_scans(backend, alpha, a, b,
-                                                text_state=text_state)
+                                                 text_state=text_state,
+                                                 fuse=self.fuse_epilogue,
+                                                 retain=self.retain_buffers)
         gate = torch.sigmoid(F.linear(xv, w["output_gate.down.weight"])
                              @ w["output_gate.up.weight"].T
                              + w["output_gate.up.bias"])

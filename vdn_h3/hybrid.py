@@ -16,6 +16,8 @@ by a DIFFUSION_MODEL wrapper that reads the payload's PackedLayout -- the same o
 the model itself consumes.
 """
 import logging
+import queue
+import threading
 
 import torch
 import torch.nn.functional as F
@@ -37,6 +39,104 @@ def _once(key, message):
     if key not in _seen:
         _seen.add(key)
         _log.info(f"[vdn] {message}")
+
+
+class _StreamPrefetcher:
+    """One-block lookahead for branch_weights="stream": while block i computes, a
+    daemon thread reads block i+1's weights from the page cache to the GPU on its
+    own (non-default) CUDA stream, so the H2D copy overlaps the compute instead of
+    stalling it. The consumer stream waits on the copy's event before use;
+    record_stream on the consumer keeps the allocator's reuse safe. At most one
+    block in flight -- the extra residency is one block (~86 MB bf16 / 43 MB
+    int8)."""
+
+    def __init__(self):
+        self._queue = queue.Queue(maxsize=1)
+        self._done = {}
+        self._inflight = set()
+        self._lock = threading.Lock()
+        self._gen = 0
+        self._stream = None
+        self._thread = threading.Thread(target=self._worker, daemon=True,
+                                        name="vdn-branch-prefetch")
+        self._thread.start()
+
+    def request(self, index, fetch):
+        with self._lock:
+            if index in self._done or index in self._inflight:
+                return
+            gen = self._gen
+            self._inflight.add(index)
+        try:
+            self._queue.put_nowait((gen, index, fetch))
+        except queue.Full:
+            with self._lock:
+                self._inflight.discard(index)
+
+    def _record(self, t, stream):
+        """Mark every storage of t (plain or kitchen QuantizedTensor) as used on
+        the consumer stream, so freeing it on the main thread can't be reused by
+        the prefetch stream while the consumer is still reading."""
+        seen = [t]
+        inner = getattr(t, "_qdata", None)
+        if inner is not None:
+            seen.append(inner)
+        params = getattr(t, "_params", None)
+        for name in ("scale", "orig_weight", "bias"):
+            sub = getattr(params, name, None)
+            if isinstance(sub, torch.Tensor):
+                seen.append(sub)
+        for x in seen:
+            try:
+                x.record_stream(stream)
+            except Exception:
+                pass
+
+    def _worker(self):
+        while True:
+            gen, index, fetch = self._queue.get()
+            try:
+                if gen != self._gen:
+                    continue
+                if self._stream is None:
+                    self._stream = torch.cuda.Stream()
+                with torch.cuda.stream(self._stream):
+                    w = fetch()
+                    ev = torch.cuda.Event()
+                    ev.record(self._stream)
+                with self._lock:
+                    if gen == self._gen:
+                        self._done[index] = (w, ev)
+            except Exception as e:
+                _log.warning("[vdn] branch prefetch failed (%s); the consumer "
+                             "will read synchronously", e)
+            finally:
+                with self._lock:
+                    self._inflight.discard(index)
+
+    def take(self, index):
+        with self._lock:
+            hit = self._done.pop(index, None)
+        if hit is None:
+            return None
+        w, ev = hit
+        cur = torch.cuda.current_stream()
+        cur.wait_event(ev)
+        for t in w.values():
+            self._record(t, cur)
+        return w
+
+    def reset(self):
+        """Cancel pending/in-flight work (run interrupt): stale entries refer to
+        weights of a cancelled forward and are dropped, not consumed."""
+        with self._lock:
+            self._gen += 1
+            self._done.clear()
+        try:
+            while True:
+                self._queue.get_nowait()
+        except queue.Empty:
+            pass
 
 
 class VDNLayout:
@@ -74,8 +174,44 @@ class VDNState:
         self.head_dim = head_dim
         self.layout = None                    # published by the wrapper each forward
         self.cache_gpu = False
+        self.retain_buffers = True            # auto-resolved at apply time
         self._gpu_cache = {}
+        self._act = None                      # per-geometry activation scratch
+        self._act_key = None
+        self._prefetcher = None
         self.forwards = 0
+
+    def act_scratch(self, video_rows, text_rows, device, dtype):
+        """The raw pre-RoPE q/k/v copies the linear branch reads. Retained mode:
+        one buffer set lives across blocks and is dropped after each block's
+        readout (the allocator re-serves it, so only one set is ever live).
+        Transient mode (VRAM pressure): fresh per block -- the v1.3.1 pattern.
+        The branch never writes to these."""
+        key = (video_rows, text_rows, self.num_heads, self.head_dim,
+               str(device), dtype)
+        if not self.retain_buffers:
+            shape = (video_rows, self.num_heads, self.head_dim)
+            tshape = (text_rows, self.num_heads, self.head_dim)
+            return {"q": torch.empty(shape, device=device, dtype=dtype),
+                    "k": torch.empty(shape, device=device, dtype=dtype),
+                    "v": torch.empty(shape, device=device, dtype=dtype),
+                    "tk": torch.empty(tshape, device=device, dtype=dtype),
+                    "tv": torch.empty(tshape, device=device, dtype=dtype)}
+        if self._act is None or self._act_key != key:
+            shape = (video_rows, self.num_heads, self.head_dim)
+            tshape = (text_rows, self.num_heads, self.head_dim)
+            self._act = {"q": torch.empty(shape, device=device, dtype=dtype),
+                         "k": torch.empty(shape, device=device, dtype=dtype),
+                         "v": torch.empty(shape, device=device, dtype=dtype),
+                         "tk": torch.empty(tshape, device=device, dtype=dtype),
+                         "tv": torch.empty(tshape, device=device, dtype=dtype)}
+            self._act_key = key
+        return self._act
+
+    def _prefetch(self):
+        if self._prefetcher is None:
+            self._prefetcher = _StreamPrefetcher()
+        return self._prefetcher
 
     def weights_on(self, index, device, dtype):
         w = self.branches[index].w
@@ -87,14 +223,34 @@ class VDNState:
             return comfy.model_management.cast_to(t, dtype=dtype, device=device,
                                                   copy=copy)
 
-        if not self.cache_gpu:
-            return {k: fetch(t) for k, t in w.items()}
-        key = (index, str(device), str(dtype))
-        hit = self._gpu_cache.get(key)
-        if hit is None:
-            hit = {k: fetch(t, copy=True) for k, t in w.items()}
-            self._gpu_cache[key] = hit
-        return hit
+        if self.cache_gpu:
+            key = (index, str(device), str(dtype))
+            hit = self._gpu_cache.get(key)
+            if hit is None:
+                hit = {k: fetch(t, copy=True) for k, t in w.items()}
+                self._gpu_cache[key] = hit
+            return hit
+        if torch.device(device).type == "cuda":
+            if not self.retain_buffers:
+                # pressure mode: skip the prefetch side-stream too -- its pool
+                # costs residency + fragmentation and only pays off when there
+                # is headroom to spend
+                return {k: fetch(t) for k, t in w.items()}
+            # stream with a one-block lookahead: block i+1's page-cache->GPU copy
+            # runs on the prefetch thread while block i computes. The chain wraps
+            # around (last block prefetches block 0), so steps after the first
+            # start with block 0 already in flight; the fetched weights are the
+            # same disk tensors every forward, so a wrapped entry stays valid.
+            pf = self._prefetch()
+            hit = pf.take(index)
+            if hit is None:
+                hit = {k: fetch(t) for k, t in w.items()}
+            nxt = (index + 1) % len(self.branches)
+            if self.branches[nxt] is not None:
+                wn = self.branches[nxt].w
+                pf.request(nxt, lambda: {k: fetch(t) for k, t in wn.items()})
+            return hit
+        return {k: fetch(t) for k, t in w.items()}
 
 
 def layout_from_payload(payload, x, context, cfg):
@@ -143,6 +299,13 @@ def make_layout_wrapper(state):
             # the next run starts clean instead of OOM-ing on its first big
             # activation. (The base model's own residency is comfy's to manage.)
             state._gpu_cache.clear()
+            state._act = None
+            state._act_key = None
+            if state._prefetcher is not None:
+                state._prefetcher.reset()
+            from vdn_h3 import branch as _b, window as _w
+            _b.clear_scan_banks()
+            _w.clear_window_state()
             torch.cuda.empty_cache()
             raise
         finally:
@@ -209,14 +372,17 @@ def make_vdn_forward(attn, state, block_index):
         text_x = text_k_raw = text_v_raw = None
         if linear_active:
             v_s, e_s = lay.video_start, lay.video_end
-            q_raw_video = q_raw[v_s:e_s].clone()
-            k_raw_video = k_raw[v_s:e_s].clone()
-            v_video = v[v_s:e_s].clone()
+            buf = state.act_scratch(
+                e_s - v_s,
+                lay.text_len if branch.enable_text_state else 0, device, dtype)
+            q_raw_video = buf["q"].copy_(q_raw[v_s:e_s])
+            k_raw_video = buf["k"].copy_(k_raw[v_s:e_s])
+            v_video = buf["v"].copy_(v[v_s:e_s])
             if branch.enable_text_state and lay.text_len:
                 t_a, t_b = lay.text_start, lay.text_start + lay.text_len
                 text_x = x[t_a:t_b]
-                text_k_raw = k_raw[t_a:t_b].clone()
-                text_v_raw = v[t_a:t_b].clone()
+                text_k_raw = buf["tk"].copy_(k_raw[t_a:t_b])
+                text_v_raw = buf["tv"].copy_(v[t_a:t_b])
 
         if rope_freqs is not None:
             q4 = q.view(1, s, heads, head_dim)
@@ -231,16 +397,20 @@ def make_vdn_forward(attn, state, block_index):
         else:
             q = q_norm(q_raw)
             k = k_norm(k_raw)
-        v = v.clone()
+        # v is NOT cloned: nothing downstream mutates it. The grouped window path
+        # gathers k/v rows through index_select (which copies into contiguous
+        # scratch), so the strided split view never reaches an SDPA kernel. The
+        # two paths that feed v to an attention call directly get a contiguous
+        # copy at the call site instead of one clone per block per step.
 
         if window_active:
             if getattr(state, "softmax_backend", "grouped") == "flex":
                 from vdn_h3.window import window_softmax_flex
                 try:
                     softmax_out = window_softmax_flex(
-                        q, k, v, lay.video_start, lay.video_end, lay.num_frames,
-                        lay.tokens_per_frame, lay.bounds, head_dim ** -0.5,
-                        anchor_frames=cfg["anchor_frames"])
+                        q, k, v.contiguous(), lay.video_start, lay.video_end,
+                        lay.num_frames, lay.tokens_per_frame, lay.bounds,
+                        head_dim ** -0.5, anchor_frames=cfg["anchor_frames"])
                 except Exception as e:
                     state.softmax_backend = "grouped"
                     _log.warning("[vdn] flex attention failed (%s); falling back "
@@ -255,11 +425,13 @@ def make_vdn_forward(attn, state, block_index):
                 softmax_out = window_softmax_grouped(
                     q, k, v, lay.video_start, lay.video_end, lay.num_frames,
                     lay.tokens_per_frame, lay.bounds, head_dim ** -0.5,
-                    anchor_frames=cfg["anchor_frames"])
+                    anchor_frames=cfg["anchor_frames"],
+                    retain_buffers=state.retain_buffers)
         else:
             q = AttentionTensorContainer(q.transpose(0, 1).unsqueeze(0))
             k = AttentionTensorContainer(k.transpose(0, 1).unsqueeze(0))
-            v = AttentionTensorContainer(v.transpose(0, 1).unsqueeze(0))
+            v = AttentionTensorContainer(
+                v.contiguous().transpose(0, 1).unsqueeze(0))
             softmax_out = optimized_attention(
                 q, k, v, heads, mask=None, skip_reshape=True,
                 transformer_options=transformer_options).squeeze(0)
@@ -287,6 +459,10 @@ def make_vdn_forward(attn, state, block_index):
                 v_video, lay.num_frames, lay.tokens_per_frame, lay.bounds,
                 frame_size=lay.frame_size, text_x=text_x, text_k_raw=text_k_raw,
                 text_v_raw=text_v_raw, skip_ends=(cfg["anchor_frames"] == "both"))
+            # release the block-local activation scratch: the readout was its
+            # last consumer, and the allocator re-serves the same block next
+            # time (no churn, no residency past one block)
+            state._act = None
             out[lay.video_start:lay.video_end] += F.linear(
                 readout.type_as(x), w["to_out_linear.weight"])
         return out

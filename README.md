@@ -114,7 +114,7 @@ builds, no `pip install`.
 > (strength 1.016) renders clean — it is specifically off-manifold rounding
 > noise, not the delta math. Merge is required for stage-dmd-*; bypass remains
 > available for non-DMD checkpoints.
-| `branch_weights` | `stream` (weights stream from disk straight to GPU per block per step — nothing extra held in RAM; safe on small cards) / `cache_gpu` (resident, faster, keep ~4.3 GB VRAM free) |
+| `branch_weights` | **`auto`** (default; picks `cache_gpu` when free VRAM after the base load exceeds 1.5x the stage size + 4 GiB headroom, else `stream`; prefers the int8_convrot stage file under memory pressure) / `stream` (weights stream from disk straight to GPU per block per step, with a one-block lookahead prefetch — nothing extra held in RAM; safe on small cards) / `cache_gpu` (resident, faster, keep ~4.3 GB VRAM free) |
 | `attention_backend` | `grouped` (default; one dense SDPA per window group) / `flex` (one compiled FlexAttention kernel; opt-in, see Benchmarks.md) |
 | `verbose` | log the applied adapters and per-forward layout |
 
@@ -131,7 +131,7 @@ samplers, VAE decode and video/audio output nodes are unchanged. Example workflo
 | `anchor_frames` | `both` / `columns` / `rows` / `none` (trained: `both`) |
 | `text_state` | write the prompt into the branch's states at init (trained: on) |
 | `linear_branch` | off = window-only ablation (debug — output loses all long-range context) |
-| `fast_kernels` | torch.compile the branch's hot spots (RMSNorm+gate epilogue, state gather, frame-major q store) into single kernels (same math; falls back to eager if compile fails) |
+| `fast_kernels` | torch.compile the branch's hot spots (RMSNorm+gate epilogue, state gather, frame-major q store, bidirectional scan as one CUDA-graph replay; falls back to eager if compile fails). **Known to drift on 8-step DMD stages (`stage-dmd-*`) on torch 2.10** — ulp-level bf16 rounding in the fused epilogue/gather that the distilled sampler amplifies. Ablation use only; keep it off for final renders (the node logs a warning) |
 
 Ablation inputs warn in the console when they deviate from the checkpoint's
 trained spec; defaults reproduce the released model exactly.
@@ -160,7 +160,7 @@ node and general attention overrides do compose.
 |---|---|---|---|
 | Base diffusion model | `minimax_h3_fl2va_int8_convrot.safetensors` (recommended with torch cu130; use the `fp8_scaled` variant only if you can't) | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) | `models/diffusion_models` |
 | Text encoder | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) | `models/text_encoders` |
-| Video VAE | `minimax_h3_video_vae_fp16.safetensors` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) | `models/vae` |
+| Video VAE | `minimax_h3_video_vae_int8_convrot.safetensors` (the fp16 variant also works, but int8_convrot fixed a decode-stuck report on a 3060 and is what the example workflow loads) | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) | `models/vae` |
 | Audio VAE | `minimax_h3_audio_vae_fp32.safetensors` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) | `models/vae` |
 | VDN branch + adapters | `stage-dmd-step-250/` (8-step) and/or `stage-b-step-2000/` (50-step) | [OpenVDN/vdn-minimax-h3](https://huggingface.co/OpenVDN/vdn-minimax-h3) | `models/vdn` |
 
@@ -177,7 +177,8 @@ Download the VDN checkpoint stage you want into `ComfyUI/models/vdn/`:
 hf download OpenVDN/vdn-minimax-h3 --include "stage-dmd-step-250/*" --local-dir <ComfyUI>/models/vdn
 ```
 
-Or, for the pre-quantized **INT8 ConvRot** version of the 8-step stage
+Or, for the pre-quantized **INT8 ConvRot** version of the 8-step stage —
+[drbaph/vdn-minimax-h3-int8-convrot-comfyui](https://huggingface.co/drbaph/vdn-minimax-h3-int8-convrot-comfyui)
 (identical output, branch 4.3 -> 2.2 GB, ~4.7 GB lower peak VRAM while loading,
 requires v1.3.0+):
 
@@ -225,9 +226,9 @@ the K/V short conv, output gates, and both LoRA adapters.
   Linux + datacenter Blackwell.
 - Eager pointwise ops instead of the official Triton/compiled fusions (temporal
   conv, RMSNorm epilogue, gather) by default — the Advanced node's `fast_kernels`
-  torch.compiles the epilogue, state gather and frame-major q store (same math,
-  eager fallback). The scan's kernel launches remain the optimization target
-  (CUDA-graph via torch.compile).
+  torch.compiles the epilogue, state gather, frame-major q store, and the
+  bidirectional scan (one CUDA-graph replay replacing 2×F kernel launches per
+  block per step); same math, eager fallback.
 - LoRA applied through ComfyUI's bypass/merge machinery (int8-fused `fc2` weights
   route through merge automatically; pruned/curve bases get the e-grid adaln
   re-injection).
@@ -263,6 +264,31 @@ and FA4/flex kernels. Expect single-GPU gains on this port to track the ~2.6x
 architectural figure, scaled by which attention backend your windows dispatch to.
 Full measurement data and verification status: [Benchmarks.md](Benchmarks.md).
 
+**Smaller cards (12–16 GB).** The int8 stack (int8_convrot base + int4 text
+encoder + [int8_convrot VDN stage](https://huggingface.co/drbaph/vdn-minimax-h3-int8-convrot-comfyui))
+fits 736p on 12–16 GB without `--lowvram`. Avoid `--lowvram` if you can:
+measured cost is 20–40% sampling speed for the offload churn, and the int8
+stack doesn't need it at 736p. Keep `branch_weights: auto` (default) — it
+picks `stream` automatically when VRAM is tight.
+
+**`retain_buffers` — speed vs VRAM, resolved automatically.** The node keeps
+some branch scratch alive between blocks (scan banks, delta-solve scratch,
+window gather buffers, q/k/v copies) and prefetches the next weight block in
+stream mode. Retained, steps run without per-block allocation churn — measured
+~15% faster than v1.3.1 at 1280x736/145f in stream mode; the measured peak
+increment is small (~0.1 GiB at 736p, none detected at 145f). `auto` (the
+default) measures it for you: retain when free VRAM ≥ stage size + 10 GiB
+headroom, otherwise fall back to the transient v1.3.1 allocation pattern (and
+skip the prefetch stream) so small cards prioritize fitting over speed. `on`
+/ `off` override.
+
+**VAE decode VRAM spike.** Stock `VAEDecode` untiled is the decode-time VRAM
+spike at 768p+ or on long clips — it decodes every frame in one shot. Use a
+tiled VAE decode node (e.g. `VAEDecodeTiled`) there; sampling fits but the
+decode OOMs otherwise. Keep the default overlap — it blends tile edges, so no
+seams; if you ever see grid artifacts, raise the tile size rather than the
+overlap.
+
 ## Troubleshooting
 
 - **`VDN checkpoint ... not found`** — the stage dir must sit under
@@ -271,11 +297,12 @@ Full measurement data and verification status: [Benchmarks.md](Benchmarks.md).
   loaded base do not belong together (e.g. a 50-block stage on a different-depth
   model). Load the matching MiniMax-H3 base.
 - **"This MODEL already has VDN-H3 applied"** — chain the node once.
-- **OOM** — use `branch_weights: stream` (default), `lora_mode: merge`, shorter
-  clips, smaller resolution. **Cancelling mid-run:** VDN drops its own GPU cache
-  on cancel so reruns start clean; if the *base model* itself was pushed
-  host-side by VRAM pressure, free/unload it once (Manager → Free, an Unload
-  node, or `POST /free`) — that residency belongs to comfy, not the node.
+- **OOM** — keep `branch_weights: auto` (default; it picks `stream` under memory
+  pressure), use `lora_mode: merge`, tiled VAE decode, shorter clips, smaller
+  resolution. **Cancelling mid-run:** VDN drops its own GPU cache on cancel so
+  reruns start clean; if the *base model* itself was pushed host-side by VRAM
+  pressure, free/unload it once (Manager → Free, an Unload node, or
+  `POST /free`) — that residency belongs to comfy, not the node.
 - **Wrong-looking motion at 8 steps** — make sure `apply_turbo_adapter` is ON with
   8 steps, or OFF with ~50 steps; mixing the two schedules degrades output.
 - **Video renders but looks like the plain model** — check `verbose` and look for

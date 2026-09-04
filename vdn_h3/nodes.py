@@ -1,8 +1,11 @@
 """Apply VDN-H3 (Video Delta Net hybrid attention) to a loaded MiniMax-H3 model."""
 
 import logging
+import os
 
 import folder_paths
+
+import comfy.model_management
 
 from vdn_h3.apply import apply_adapters
 from vdn_h3.hybrid import VDNState, apply_vdn
@@ -12,63 +15,30 @@ import vdn_h3.spec as spec
 _log = logging.getLogger("comfy.vdn")
 
 
-class ApplyVDNH3:
-    @classmethod
-    def INPUT_TYPES(cls):
-        names = spec.list_vdn_checkpoints()
-        return {"required": {
-            "model": ("MODEL",),
-            "vdn_checkpoint": (names or ["<place a VDN stage-... directory under models/vdn>"],),
-            "apply_turbo_adapter": ("BOOLEAN", {
-                "default": True,
-                "tooltip": "Apply the 'turbo' adapter when the checkpoint carries one "
-                           "(stage-dmd = the 8-step VDN-H3 model). OFF gives the "
-                           "50-step model the checkpoint was distilled from. Use 8 "
-                           "sampler steps with it ON, 50 with it OFF."}),
-            "strength": ("FLOAT", {
-                "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
-                "tooltip": "Adapter strength. 1.0 is the released model."}),
-            "lora_mode": (["bypass", "merge"], {
-                "default": "merge",
-                "tooltip": "merge: adapters folded into the weights -- reproduces "
-                           "the validated model exactly. REQUIRED for 8-step DMD "
-                           "checkpoints (stage-dmd-*): bypass's activation-space "
-                           "rounding noise is amplified by the deep blocks and "
-                           "visibly degrades output."}),
-            "branch_weights": (["stream", "cache_gpu"], {
-                "default": "stream",
-                "tooltip": "stream: the ~4.3 GB of linear-branch weights are moved to "
-                           "the GPU per block per step (safe on small cards, a little "
-                           "slower). cache_gpu: resident on the GPU after the first "
-                           "step (faster; keep ~4.3 GB VRAM free)."}),
-            "verbose": ("BOOLEAN", {"default": False}),
-            "attention_backend": (["grouped", "flex"], {
-                "default": "grouped",
-                "tooltip": "How the windowed softmax runs. grouped: one dense SDPA "
-                           "per window group (portable, exact). flex: the whole "
-                           "pattern as one compiled FlexAttention kernel over the "
-                           "full sequence (faster on long clips; first run compiles, "
-                           "falls back to grouped if compile fails)."}),
-        }}
-
-    RETURN_TYPES = ("MODEL",)
-    FUNCTION = "apply"
-    CATEGORY = "model_patch/video"
-    DESCRIPTION = (
-        "VDN-H3: hybrid attention for MiniMax-H3. Nearby frames keep exact softmax "
-        "attention; distant context goes through the checkpoint's linear Video Delta "
-        "Attention branch. Requires a VDN checkpoint (models/vdn, from "
-        "OpenVDN/vdn-minimax-h3) and a MiniMax-H3 base model.")
-
 def _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
                attention_backend, verbose, apply_turbo_adapter=True,
-               cfg_overrides=None, fast_kernels=False):
+               cfg_overrides=None, fast_kernels=False, retain_buffers="auto"):
     """Shared core of ApplyVDNH3 and ApplyVDNH3Advanced. `strength` is a float or a
     {adapter_name: float} map; `cfg_overrides` deviates from the checkpoint's trained
     spec (ablation knobs); `fast_kernels` torch.compiles the branch's hot spots
-    (epilogue, state gather, frame-major q store)."""
+    (epilogue, state gather, frame-major q store, bidirectional scan)."""
     path = spec.resolve_vdn_checkpoint(vdn_checkpoint)
-    cfg, branch_weights_by_block, adapters = spec.load_vdn_checkpoint(path)
+    prefer_int8 = False
+    retain = True
+    if branch_weights == "auto" or retain_buffers == "auto":
+        # free VRAM right now = after the base model's load in the same run
+        free = comfy.model_management.get_free_memory(
+            comfy.model_management.get_torch_device())
+    else:
+        free = None
+    if branch_weights == "auto":
+        branch_weights, prefer_int8 = spec.auto_branch_policy(path, free)
+    cfg, branch_weights_by_block, adapters = spec.load_vdn_checkpoint(
+        path, prefer_int8=prefer_int8)
+    if retain_buffers == "auto":
+        retain = spec.auto_retain_policy(path, prefer_int8, free)
+    else:
+        retain = retain_buffers == "on"
 
     if cfg_overrides:
         changed = {k: (cfg.get(k), v) for k, v in cfg_overrides.items()
@@ -125,11 +95,19 @@ def _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
     branches = [LinearBranch(w, num_heads, head_dim,
                              delta_rule=cfg["delta_rule"], bridge=cfg["bridge"],
                              a_fp32=cfg["a_fp32"], short_conv=cfg["short_conv"],
-                             enable_text_state=cfg["enable_text_state"])
+                             enable_text_state=cfg["enable_text_state"],
+                             retain_buffers=retain)
                 for w in branch_weights_by_block]
     for b in branches:
         b.fuse_epilogue = fast_kernels
+    if fast_kernels and "dmd" in os.path.basename(path).lower():
+        _log.warning(
+            "[vdn] fast_kernels on an 8-step DMD stage (%s): the compiled branch "
+            "kernels are known to drift on 8-step DMD checkpoints (measurably "
+            "visible output on torch 2.10) -- ablation use only, do not use for "
+            "final renders", os.path.basename(path))
     state = VDNState(vdn_checkpoint, cfg, branches, num_heads, head_dim)
+    state.retain_buffers = retain
     state.cache_gpu = branch_weights == "cache_gpu"
     state.softmax_backend = attention_backend
 
@@ -147,9 +125,9 @@ def _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
             "stage directory.")
     converted = {}
     for name in sorted(wanted & set(adapters)):
-        sd, adapter_cfg = adapters[name]
+        loader, adapter_cfg = adapters[name]
         from vdn_h3.adapters import convert_adapter
-        converted[name] = convert_adapter(sd, adapter_cfg)
+        converted[name] = convert_adapter(loader(), adapter_cfg)
         if verbose:
             _log.info("[vdn] adapter %s: %d modules (%s)", name,
                       len(converted[name]),
@@ -187,12 +165,24 @@ class ApplyVDNH3:
                            "checkpoints (stage-dmd-*): bypass's activation-space "
                            "rounding noise is amplified by the deep blocks and "
                            "visibly degrades output."}),
-            "branch_weights": (["stream", "cache_gpu"], {
-                "default": "stream",
-                "tooltip": "stream: the ~4.3 GB of linear-branch weights are moved to "
-                           "the GPU per block per step (safe on small cards, a little "
-                           "slower). cache_gpu: resident on the GPU after the first "
-                           "step (faster; keep ~4.3 GB VRAM free)."}),
+            "branch_weights": (["auto", "stream", "cache_gpu"], {
+                "default": "auto",
+                "tooltip": "auto (default): cache_gpu when the free VRAM after the "
+                           "base load exceeds 1.5x the stage size + 4 GiB headroom, "
+                           "else stream (prefers the int8_convrot stage file under "
+                           "memory pressure). stream: the ~4.3 GB of linear-branch "
+                           "weights are moved to the GPU per block per step, with a "
+                           "one-block lookahead prefetch (safe on small cards). "
+                           "cache_gpu: resident on the GPU after the first step "
+                           "(faster; keep ~4.3 GB VRAM free)."}),
+            "retain_buffers": (["auto", "on", "off"], {
+                "default": "auto",
+                "tooltip": "Retained branch scratch/banks (scan banks, delta "
+                           "solve, window gather, q/k/v copies + prefetch) trade "
+                           "~0.5-1 GiB VRAM for churn-free steps. auto: retain "
+                           "when free VRAM >= stage + 10 GiB headroom, else "
+                           "transient (v1.3.1 allocation pattern, peak VRAM "
+                           "priority on small cards). on/off override."}),
             "verbose": ("BOOLEAN", {"default": False}),
             "attention_backend": (["grouped", "flex"], {
                 "default": "grouped",
@@ -213,10 +203,11 @@ class ApplyVDNH3:
         "OpenVDN/vdn-minimax-h3) and a MiniMax-H3 base model.")
 
     def apply(self, model, vdn_checkpoint, apply_turbo_adapter, strength, lora_mode,
-              branch_weights, attention_backend, verbose):
+              branch_weights, attention_backend, verbose, retain_buffers="auto"):
         return _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
                           attention_backend, verbose,
-                          apply_turbo_adapter=apply_turbo_adapter)
+                          apply_turbo_adapter=apply_turbo_adapter,
+                          retain_buffers=retain_buffers)
 
 
 class ApplyVDNH3Advanced:
@@ -244,7 +235,8 @@ class ApplyVDNH3Advanced:
                 "default": "merge",
                 "tooltip": "merge required for 8-step DMD checkpoints; see the "
                            "base node's tooltip."}),
-            "branch_weights": (["stream", "cache_gpu"], {"default": "stream"}),
+            "branch_weights": (["auto", "stream", "cache_gpu"], {"default": "auto"}),
+            "retain_buffers": (["auto", "on", "off"], {"default": "auto"}),
             "verbose": ("BOOLEAN", {"default": False}),
             "attention_backend": (["grouped", "flex"], {"default": "grouped"}),
         }, "optional": {
@@ -270,9 +262,10 @@ class ApplyVDNH3Advanced:
             "fast_kernels": ("BOOLEAN", {
                 "default": False,
                 "tooltip": "torch.compile the branch's hot spots (RMSNorm+gate "
-                           "epilogue, state gather, frame-major q store) into single "
-                           "kernels. Same math; falls back to eager if compile "
-                           "fails. First run compiles."}),
+                           "epilogue, state gather, frame-major q store, and the "
+                           "bidirectional scan as one CUDA-graph replay). Same "
+                           "math; falls back to eager if compile fails. First run "
+                           "compiles."}),
         }}
 
     RETURN_TYPES = ("MODEL",)
@@ -285,6 +278,7 @@ class ApplyVDNH3Advanced:
 
     def apply(self, model, vdn_checkpoint, apply_turbo_adapter, stage_b_strength,
               turbo_strength, lora_mode, branch_weights, attention_backend, verbose,
+              retain_buffers="auto",
               window_radius=1, window_chunk=5, anchor_frames="both", text_state=True,
               linear_branch=True, fast_kernels=False):
         strength = {"default": stage_b_strength, "turbo": turbo_strength}
@@ -295,7 +289,8 @@ class ApplyVDNH3Advanced:
         return _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
                           attention_backend, verbose,
                           apply_turbo_adapter=apply_turbo_adapter,
-                          cfg_overrides=cfg_overrides, fast_kernels=fast_kernels)
+                          cfg_overrides=cfg_overrides, fast_kernels=fast_kernels,
+                          retain_buffers=retain_buffers)
 
 
 NODE_CLASS_MAPPINGS = {"ApplyVDNH3": ApplyVDNH3,

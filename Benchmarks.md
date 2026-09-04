@@ -1,5 +1,94 @@
 # Benchmarks — ComfyUI-VDN-H3
 
+## Optimization round (2026-09-04, this branch)
+
+Rig: RTX 5090 (sm_120, 32 GB), Windows 11, torch 2.10.0+cu130, triton 3.6.0.
+Base `minimax_h3_fl2va_int8_convrot.safetensors`, stage `stage-dmd-step-250`
+(bf16 branch), turbo adapter ON, **merge**, grouped windows, er_sde/beta, 8
+steps, seed 42. Peaks are `torch.cuda.max_memory_allocated()` reset right after
+the model chain — i.e. the sampling-phase peak, excluding the one-time model
+load and the VAE decode.
+
+### 1280x736, 145 frames (F=47 latent, seq 34,487) — headline config
+
+Fresh server per run, first run of each, stream mode, seed 42, prompt 0:
+
+| build | allocation mode | s/it | sampling peak |
+|---|---|---|---|
+| v1.3.1 baseline | per-call (only pattern) | 16.30 (cold file; warm repeats 15.0–15.6) | 11.94 GiB |
+| optimized | retained | 13.87 (−15% / −9% vs cold/warm baseline) | 13.08 GiB |
+| optimized | transient (`retain_buffers off`) | 14.11 (−13% / −8%) | 13.08 GiB |
+
+Findings, stated plainly:
+
+- **Speed**: retained mode is ~15% faster than the same-protocol baseline run
+  (the baseline's first-run figure includes a cold page cache; against its warm
+  repeats the gain is ~9%). Transient mode keeps most of it (the prefetcher,
+  not the buffers, is the larger part of the remaining gap).
+- **Peak VRAM is NOT lower — it is ~+1.1 GiB over baseline in BOTH modes.** The
+  transient run (v1.3.1's exact allocation pattern: per-call banks/scratch, no
+  prefetch) peaks identical to retained (13.08 vs 13.08), so the retained
+  buffers are NOT the cause — the delta reproduces without them and is not
+  attributed to a specific buffer. comfy's dynamic-loading staging is identical
+  across runs (DiT 32427 MB staged in all). Until this is pinned, the honest
+  release line is: **~15% faster at the headline config, +~1.1 GiB sampling
+  peak, output bit-identical.** On cards where 1 GiB is the difference between
+  fitting and thrashing, use `retain_buffers: off` — it measured equal-or-lower
+  peak than retained at both test sizes.
+- **Parity at the headline config: bit-identical.** Both modes vs baseline:
+  latent PSNR ∞ (zero MSE), frame LPIPS 0.0000 over all 158 decoded frames,
+  seed 42.
+
+### 512x320, 56 frames (F=17, S=160, seq 2,938) — smoke A/B vs v1.3.1
+
+| build | branch_weights | mode | s/it | sampling peak |
+|---|---|---|---|---|
+| v1.3.1 baseline | stream | — | 1.66 | 2.03 GiB |
+| optimized | stream | retained | 1.66–1.74 | 2.45 GiB |
+| optimized | stream | transient | ~2.5 (cold run) | 2.34 GiB |
+| optimized | auto → cache_gpu | retained | 1.55–1.56 | 6.28–6.36 GiB |
+| optimized | fast_kernels (stream) | retained | 1.61 | 3.30 GiB |
+
+At this tiny size the grouped window issues few SDPA calls and the scan loop is
+short, so s/it is flat in stream mode and the buffers cost ~0.1 GiB retained.
+Optimized-side cache_gpu numbers were taken on a warm server; the transient
+smoke figure is from a cold first run and is not speed-comparable.
+
+### Parity gate (PASS)
+
+Seed 42, pre-VAE-decode latents + decoded frames, both sizes:
+
+| A/B | size | latent PSNR | frame LPIPS (max) |
+|---|---|---|---|
+| v1.3.1 vs optimized `auto` (3 prompts) | 56f | **∞ (bit-identical)** | **0.0000** |
+| v1.3.1 vs optimized stream+prefetch | 56f | **∞** | **0.0000** |
+| v1.3.1 vs retained, after act-scratch fix | 56f | **∞** | **0.0000** |
+| v1.3.1 vs transient (`retain_buffers off`) | 56f + **145f** | **∞** | **0.0000** |
+| v1.3.1 vs retained | **145f** | **∞** | **0.0000** |
+
+Gate thresholds (≥ 50 dB, ≤ 0.01) passed with maximum margin at both sizes and
+in every buffer mode — the optimized defaults are exactly output-preserving,
+not just within bf16 reduction-order noise.
+
+**fast_kernels caveat (pre-existing, opt-in):** the same-seed fast_kernels run
+diverges visibly (latent PSNR 17.3 dB, LPIPS 0.104). Root cause is NOT the new
+compiled scan — that measures exact (max err 0.0 on GPU, cudagraph replays
+included) — but the pre-existing fused epilogue/gather/q-store kernels, whose
+1–2 ulp bf16 rounding differences (max 0.06 elementwise) the 8-step DMD
+amplifies (the same sensitivity documented for bypass mode in v1.2.0).
+fast_kernels stays off by default, now logs a warning on DMD stages, and is
+documented as ablation-only in the README.
+
+**auto policy validated live:** with VRAM crowded by earlier runs' caches, auto
+downshifted to `stream` mid-queue (2.2/1.3 GiB free observed) and recovered;
+on a fresh 32 GB card it picks `cache_gpu`. Synthetic threshold checks: cache_gpu
+≥ 1.5× stage + 4 GiB headroom, else stream; int8_convrot stage file preferred
+under pressure when both branch files coexist in one stage dir;
+`retain_buffers=auto` retains when free ≥ stage + 10 GiB, else transient.
+
+Unit tests: 12/12 (10 existing + compiled-scan parity + transient/retained
+buffer parity).
+
 ## Rig
 
 - GPU: NVIDIA GeForce RTX 5090 (sm_120, 32 GB), Windows 11

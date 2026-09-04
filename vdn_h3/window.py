@@ -12,8 +12,14 @@ it needs no Triton and no torch.compile while keeping the exact same softmax
 partition (the official window_softmax_reference is the same arithmetic spelled as
 one SDPA per frame instead of per chunk).
 """
+import collections
+import logging
+import os
+
 import torch
 import torch.nn.functional as F
+
+_log = logging.getLogger("comfy.vdn")
 
 ANCHOR_FRAME_MODES = ("none", "columns", "rows", "both")
 
@@ -36,9 +42,97 @@ def full_coverage(bounds, num_frames):
     return all(lo <= 0 and hi >= num_frames - 1 for lo, hi in bounds)
 
 
+# --------------------------------------------------- grouped-path plan & scratch --
+
+MAX_CACHED_PLANS = 8
+_PLAN_CACHE = collections.OrderedDict()
+_KV_SCRATCH = {}
+
+
+def _window_plan(video_start, video_end, num_frames, tokens_per_frame, bounds,
+                 anchor_frames, seq, device):
+    """Everything about the window partition that is identical for every block and
+    every step of a run: the global-row index, per-group query/window row indices,
+    and the anchor-row slices. Cached per layout instead of rebuilding ~50
+    arange/cat index tensors per block per step."""
+    key = (video_start, video_end, num_frames, tokens_per_frame,
+           tuple(map(tuple, bounds)), anchor_frames, seq, str(device))
+    hit = _PLAN_CACHE.get(key)
+    if hit is not None:
+        _PLAN_CACHE.move_to_end(key)
+        return hit
+
+    def frame_rows(f):
+        a = video_start + f * tokens_per_frame
+        return torch.arange(a, a + tokens_per_frame, device=device)
+
+    global_idx = torch.cat([torch.arange(video_start, device=device),
+                            torch.arange(video_end, seq, device=device)])
+    anchors = (0, num_frames - 1)
+    anchor_rows = sorted(f for f in anchors if anchor_frames in ("rows", "both"))
+    anchor_set = set(anchor_rows)
+
+    grouped = collections.OrderedDict()
+    for f in range(num_frames):
+        if f in anchor_set:
+            continue
+        lo = max(bounds[f][0], 0)
+        hi = min(bounds[f][1], num_frames - 1)
+        grouped.setdefault((lo, hi), []).append(f)
+
+    groups = []
+    max_rows = global_idx.numel()
+    for (lo, hi), frames in grouped.items():
+        extra = [f for f in anchors
+                 if anchor_frames in ("columns", "both") and not lo <= f <= hi]
+        key_frames = sorted(set(range(lo, hi + 1)) | set(extra))
+        win_idx = torch.cat([frame_rows(f) for f in key_frames])
+        q_idx = torch.cat([frame_rows(f) for f in frames])
+        groups.append((q_idx, win_idx))
+        max_rows = max(max_rows, global_idx.numel() + win_idx.numel())
+    plan = dict(global_idx=global_idx, groups=groups,
+                anchor_slices=[(video_start + f * tokens_per_frame,
+                                video_start + (f + 1) * tokens_per_frame)
+                               for f in anchor_rows],
+                max_kv_rows=max_rows)
+    _PLAN_CACHE[key] = plan
+    while len(_PLAN_CACHE) > MAX_CACHED_PLANS:
+        _PLAN_CACHE.popitem(last=False)
+    return plan
+
+
+def _kv_scratch(rows, heads, head_dim, device, dtype, retain=True):
+    """Retained mode: ONE grow-only k/v buffer pair per (device, dtype), sized
+    to the largest window group; every group's gather lands in a slice of it
+    instead of a fresh per-group torch.cat allocation. Transient mode (VRAM
+    pressure): fresh per call -- the v1.3.1 pattern. Same-stream execution makes
+    the reuse safe (each group's SDPA is enqueued before the next group's
+    gather overwrites)."""
+    if not retain:
+        shape = (rows, heads, head_dim)
+        return (torch.empty(shape, device=device, dtype=dtype),
+                torch.empty(shape, device=device, dtype=dtype))
+    key = (str(device), dtype)
+    pair = _KV_SCRATCH.get(key)
+    need = rows * heads * head_dim
+    if pair is None or pair[0].numel() < need:
+        pair = (torch.empty(need, device=device, dtype=dtype),
+                torch.empty(need, device=device, dtype=dtype))
+        _KV_SCRATCH[key] = pair
+    return (pair[0][:need].view(rows, heads, head_dim),
+            pair[1][:need].view(rows, heads, head_dim))
+
+
+def clear_window_state():
+    """Drop cached window plans and the k/v scratch (run interrupt / cleanup)."""
+    _PLAN_CACHE.clear()
+    _KV_SCRATCH.clear()
+
+
 def window_softmax_grouped(query, key, value, video_start, video_end,
                            num_frames, tokens_per_frame, bounds, scale,
-                           anchor_frames="none", transformer_options=None):
+                           anchor_frames="none", transformer_options=None,
+                           retain_buffers=True):
     """Windowed softmax over the packed sequence [globals | video], one dense SDPA
     call per distinct query group.
 
@@ -50,54 +144,110 @@ def window_softmax_grouped(query, key, value, video_start, video_end,
     queries see everything, "both" is exact on both sides).
     """
     heads, head_dim = query.shape[1], query.shape[2]
+    seq = query.shape[0]
     out = torch.empty_like(query)
-
-    global_idx = torch.cat([torch.arange(video_start, device=query.device),
-                            torch.arange(video_end, query.shape[0], device=query.device)])
+    plan = _window_plan(video_start, video_end, num_frames, tokens_per_frame,
+                        bounds, anchor_frames, seq, query.device)
+    global_idx = plan["global_idx"]
     global_q = query[global_idx]
-    global_k, global_v = key[global_idx], value[global_idx]
-    if global_idx.numel():
+    g = global_idx.numel()
+    if g:
         # globals (text/cond/audio) are dense in both directions: every key
         out[global_idx] = _sdpa(global_q, key, value, scale, transformer_options)
 
-    def frame_slice(f):
-        a = video_start + f * tokens_per_frame
-        b = a + tokens_per_frame
-        return a, b
+    groups = plan["groups"]
+    if groups:
+        global_k = key[global_idx]
+        global_v = value[global_idx]
+        k_scratch, v_scratch = _kv_scratch(plan["max_kv_rows"], heads, head_dim,
+                                           key.device, key.dtype,
+                                           retain=retain_buffers)
+        if g:
+            k_scratch[:g].copy_(global_k)
+            v_scratch[:g].copy_(global_v)
+        for q_idx, win_idx in groups:
+            w = win_idx.numel()
+            torch.index_select(key, 0, win_idx, out=k_scratch[g:g + w])
+            torch.index_select(value, 0, win_idx, out=v_scratch[g:g + w])
+            q_rows = query.index_select(0, q_idx)
+            out[q_idx] = _sdpa(q_rows, k_scratch[:g + w], v_scratch[:g + w],
+                               scale, transformer_options)
 
-    def video_keys(frames):
-        rows = [slice(*frame_slice(f)) for f in frames]
-        return (torch.cat([key[r] for r in rows]),
-                torch.cat([value[r] for r in rows]))
-
-    anchors = (0, num_frames - 1)
-    anchor_rows = {f for f in anchors if anchor_frames in ("rows", "both")}
-
-    # group frames by their clamped window; anchor-row frames split out as dense
-    groups = {}
-    for f in range(num_frames):
-        if f in anchor_rows:
-            continue
-        lo = max(bounds[f][0], 0)
-        hi = min(bounds[f][1], num_frames - 1)
-        groups.setdefault((lo, hi), []).append(f)
-
-    for (lo, hi), frames in groups.items():
-        q_rows = torch.cat([query[slice(*frame_slice(f))] for f in frames])
-        key_frames = list(range(lo, hi + 1))
-        extra = [f for f in anchors
-                 if anchor_frames in ("columns", "both") and not lo <= f <= hi]
-        k_w, v_w = video_keys(sorted(set(key_frames) | set(extra)))
-        k = torch.cat([global_k, k_w])
-        v = torch.cat([global_v, v_w])
-        out[torch.cat([torch.arange(*frame_slice(f)) for f in frames])] = \
-            _sdpa(q_rows, k, v, scale, transformer_options)
-
-    for f in anchor_rows:
-        a, b = frame_slice(f)
+    for a, b in plan["anchor_slices"]:
         out[a:b] = _sdpa(query[a:b], key, value, scale, transformer_options)
 
     return out
+
+
+# ------------------------------------------------------------- backend visibility --
+
+_BACKEND_LOGGED = False
+_FORCED_BACKEND = ...  # lazily parsed sentinel
+_FORCED_BROKEN = set()
+
+# Exact SDPA backends only, in ComfyUI's priority order. The window softmax must
+# never route through sage/kitchen int8 overrides (that measurably softens
+# output); choosing AMONG the exact kernels is pure perf, no quality surface.
+_BACKEND_PRIORITY = ("flash", "cudnn", "mem_efficient", "math")
+
+
+def _sdpa_backend_enum(name):
+    from torch.nn.attention import SDPBackend
+    return {"flash": SDPBackend.FLASH_ATTENTION,
+            "cudnn": SDPBackend.CUDNN_ATTENTION,
+            "mem_efficient": SDPBackend.EFFICIENT_ATTENTION,
+            "math": SDPBackend.MATH}[name]
+
+
+def _forced_backend():
+    """VDN_H3_WINDOW_SDPA=flash|cudnn|mem_efficient|math forces one exact backend
+    for the window groups (default: ComfyUI's priority chain)."""
+    global _FORCED_BACKEND
+    if _FORCED_BACKEND is ...:
+        raw = os.environ.get("VDN_H3_WINDOW_SDPA", "auto").strip().lower()
+        if raw in ("", "auto"):
+            _FORCED_BACKEND = None
+        elif raw in _BACKEND_PRIORITY:
+            _FORCED_BACKEND = raw
+        else:
+            _log.warning("[vdn] VDN_H3_WINDOW_SDPA=%r not one of %s; ignoring",
+                         raw, _BACKEND_PRIORITY)
+            _FORCED_BACKEND = None
+    return _FORCED_BACKEND
+
+
+def _sdpa_call(q4, k4, v4, scale, backend=None):
+    """One SDPA under a single-backend (or default-chain) dispatch context."""
+    if backend is None:
+        return F.scaled_dot_product_attention(q4, k4, v4, scale=scale)
+    from torch.nn.attention import sdpa_kernel
+    with sdpa_kernel([_sdpa_backend_enum(backend)], set_priority=True):
+        return F.scaled_dot_product_attention(q4, k4, v4, scale=scale)
+
+
+def _log_backend_once(q4, k4, v4, scale):
+    """Name the exact kernel the priority chain actually picks for these window
+    shapes: probe flash -> cuDNN -> mem-efficient -> math once, in order."""
+    global _BACKEND_LOGGED
+    if _BACKEND_LOGGED:
+        return
+    _BACKEND_LOGGED = True
+    forced = _forced_backend()
+    if forced is not None:
+        _log.info("[vdn] window SDPA backend: %s (forced via "
+                  "VDN_H3_WINDOW_SDPA)", forced)
+        return
+    chosen = "math"
+    for name in _BACKEND_PRIORITY:
+        try:
+            _sdpa_call(q4, k4, v4, scale, backend=name)
+            chosen = name
+            break
+        except Exception:
+            continue
+    _log.info("[vdn] window SDPA backend: %s (priority flash -> cuDNN -> "
+              "mem-efficient; override with VDN_H3_WINDOW_SDPA=flash|cudnn|"
+              "mem_efficient)", chosen)
 
 
 def _sdpa(q_rows, k_rows, v_rows, scale, transformer_options=None):
@@ -121,14 +271,24 @@ def _sdpa(q_rows, k_rows, v_rows, scale, transformer_options=None):
     # No override: still dispatch through comfy's backend-priority chain
     # (flash -> cuDNN -> mem-efficient), since Windows torch builds ship without
     # the flash kernel and raw F.sdpa lands on the slow mem-efficient backend.
+    q4 = q_rows.permute(1, 0, 2).unsqueeze(0)
+    k4 = k_rows.permute(1, 0, 2).unsqueeze(0)
+    v4 = v_rows.permute(1, 0, 2).unsqueeze(0)
+    _log_backend_once(q4, k4, v4, scale)
+    forced = _forced_backend()
+    if forced is not None and forced not in _FORCED_BROKEN:
+        try:
+            return _sdpa_call(q4, k4, v4, scale, backend=forced) \
+                .squeeze(0).permute(1, 0, 2)
+        except RuntimeError as e:
+            _FORCED_BROKEN.add(forced)
+            _log.warning("[vdn] forced window SDPA backend %s unavailable (%s); "
+                         "using the default chain from here on", forced, e)
     try:
         from comfy.ops import scaled_dot_product_attention as comfy_sdpa
     except ImportError:                      # unit tests run without comfy on path
         comfy_sdpa = F.scaled_dot_product_attention
-    attended = comfy_sdpa(
-        q_rows.permute(1, 0, 2).unsqueeze(0),
-        k_rows.permute(1, 0, 2).unsqueeze(0),
-        v_rows.permute(1, 0, 2).unsqueeze(0), scale=scale)
+    attended = comfy_sdpa(q4, k4, v4, scale=scale)
     return attended.squeeze(0).permute(1, 0, 2)
 
 

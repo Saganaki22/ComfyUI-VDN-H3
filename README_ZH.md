@@ -109,7 +109,7 @@ safetensors)运行官方数学,不需要 Triton、flash-attn-4、CUDA 编译或
 | `anchor_frames` | `both` / `columns` / `rows` / `none`(训练值 `both`) |
 | `text_state` | 初始化时把提示词写入线性分支状态(训练值:开) |
 | `linear_branch` | 关 = 仅窗口消融(调试;长片段将失去全部长距离上下文) |
-| `fast_kernels` | torch.compile 把分支热点(RMSNorm+门控尾声、状态收集、帧主序 q 存储)融合为单内核(数学相同;编译失败自动回退 eager) |
+| `fast_kernels` | torch.compile 把分支热点(RMSNorm+门控尾声、状态收集、帧主序 q 存储、双向扫描为单次 CUDA-graph 重放)融合为单内核(数学相同;编译失败自动回退 eager)。**已知在 torch 2.10 上对 8 步 DMD stage(`stage-dmd-*`)产生可见漂移** —— 融合内核的 bf16 舍入误差被蒸馏采样器放大。仅限消融实验;最终渲染请关闭(节点会打印警告) |
 
 消融输入偏离检查点训练规格时会在控制台警告;全部默认值精确复现发布模型。
 
@@ -150,7 +150,9 @@ VDN 发布版**不包含基座权重** —— 只有分支与 LoRA 适配器,运
 hf download OpenVDN/vdn-minimax-h3 --include "stage-dmd-step-250/*" --local-dir <ComfyUI>/models/vdn
 ```
 
-或者使用 8 步 stage 的预量化 **INT8 ConvRot** 版本(输出一致,分支 4.3 -> 2.2 GB,
+或者使用 8 步 stage 的预量化 **INT8 ConvRot** 版本 —
+[drbaph/vdn-minimax-h3-int8-convrot-comfyui](https://huggingface.co/drbaph/vdn-minimax-h3-int8-convrot-comfyui)
+(输出一致,分支 4.3 -> 2.2 GB,
 加载峰值显存低约 4.7 GB,需要 v1.3.0+):
 
 ```bash

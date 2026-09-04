@@ -29,6 +29,20 @@ class _FrugalLoRA(comfy.weight_adapter.LoRAAdapter):
     MiniMax-H3-Turbo node): accumulates up(down(x)) * scale straight into the base
     output instead of allocating the full-size projection three times."""
 
+    def _cast_pair(self, down, up, x):
+        """The per-call .to(dtype) casts of the LoRA pair, cached per (dtype,
+        device): bypass_forward runs once per module per step, and the cast result
+        is identical every time. Bypass mode only; merge never sees this path."""
+        key = (x.dtype, x.device)
+        cache = getattr(self, "_cast_cache", None)
+        if cache is None:
+            cache = self._cast_cache = {}
+        hit = cache.get(key)
+        if hit is None:
+            hit = (down.to(dtype=x.dtype), up.to(dtype=x.dtype))
+            cache[key] = hit
+        return hit
+
     def bypass_forward(self, org_forward, x, *args, **kwargs):
         base_out = org_forward(x, *args, **kwargs)
         if getattr(self, "is_conv", False):
@@ -37,8 +51,7 @@ class _FrugalLoRA(comfy.weight_adapter.LoRAAdapter):
         rank = down.shape[0]
         scale = (alpha / rank if alpha is not None else 1.0) \
             * getattr(self, "multiplier", 1.0)
-        down = down.to(dtype=x.dtype)
-        up = up.to(dtype=x.dtype)
+        down, up = self._cast_pair(down, up, x)
         return base_out.add_(torch.nn.functional.linear(
             torch.nn.functional.linear(x, down), up), alpha=scale)
 

@@ -5,6 +5,7 @@ linear_branch/ + adapters/) from huggingface.co/OpenVDN/vdn-minimax-h3, dropped 
 ComfyUI's models/vdn/ folder. Nothing is converted on disk; tensors are re-keyed in
 memory onto ComfyUI's MiniMax-H3 module paths.
 """
+import functools
 import json
 import logging
 import os
@@ -30,15 +31,71 @@ except ImportError:  # pragma: no cover - kitchen ships with comfy
     _KITCHEN_OK = False
 
 
-def _branch_file(path):
-    """The stage's branch file: plain, or the pre-quantized int8_convrot_comfyui one."""
+def _branch_file(path, prefer_int8=False):
+    """The stage's branch file: plain, or the pre-quantized int8_convrot_comfyui
+    one. Plain wins when both exist unless prefer_int8 (auto mode under VRAM
+    pressure; see auto_branch_policy)."""
     plain = os.path.join(path, "linear_branch", BRANCH_FILE)
+    quant = os.path.join(path, "linear_branch", BRANCH_FILE_INT8)
+    if prefer_int8:
+        if os.path.isfile(quant):
+            return quant
+        return plain
     if os.path.isfile(plain):
         return plain
-    quant = os.path.join(path, "linear_branch", BRANCH_FILE_INT8)
     if os.path.isfile(quant):
         return quant
     return plain
+
+
+def auto_branch_policy(path, free_bytes):
+    """branch_weights="auto": cache_gpu when the free VRAM (queried after the base
+    load) exceeds 1.5x the stage size plus 4 GiB of headroom, else stream. Under
+    memory pressure the int8_convrot branch file is preferred over the plain bf16
+    one when both exist (2.2 GB vs 4.3 GB, identical output). Returns
+    (mode, prefer_int8); the choice is logged."""
+    plain = os.path.join(path, "linear_branch", BRANCH_FILE)
+    quant = os.path.join(path, "linear_branch", BRANCH_FILE_INT8)
+    have_plain, have_quant = os.path.isfile(plain), os.path.isfile(quant)
+    size_plain = os.path.getsize(plain) if have_plain else 0
+    size_quant = os.path.getsize(quant) if have_quant else 0
+    gib = 1 << 30
+
+    def fits(size):
+        return free_bytes > 1.5 * size + 4 * gib
+
+    prefer_int8 = False
+    if have_plain and fits(size_plain):
+        mode = "cache_gpu"                        # no pressure: plain wins, resident
+    elif have_quant:
+        prefer_int8 = have_plain                  # pressure (or int8-only stage)
+        mode = "cache_gpu" if fits(size_quant) else "stream"
+    else:
+        mode = "stream"
+    chosen = quant if prefer_int8 else plain
+    _log.info("[vdn] branch_weights=auto: %s, %s (%.1f GiB VRAM free, stage "
+              "%.2f GiB%s)", os.path.basename(chosen), mode, free_bytes / gib,
+              (size_quant if prefer_int8 else size_plain) / gib,
+              ", int8 preferred under memory pressure"
+              if prefer_int8 and have_plain else "")
+    return mode, prefer_int8
+
+
+def auto_retain_policy(path, prefer_int8, free_bytes):
+    """retain_buffers="auto": keep the retained scratch/bank buffers when VRAM
+    has headroom (free >= stage + 10 GiB) -- they buy allocator-churn-free
+    steps and the one-block prefetch; go transient (the v1.3.1 per-call
+    allocation pattern, prefetch skipped) under pressure, where the ~0.5-1 GiB
+    of retained buffers can cost more than the churn they save. Logged."""
+    branch_path = _branch_file(path, prefer_int8=prefer_int8)
+    stage = os.path.getsize(branch_path) if os.path.isfile(branch_path) else 0
+    gib = 1 << 30
+    retain = free_bytes >= stage + 10 * gib
+    _log.info("[vdn] retain_buffers=auto: %s (%.1f GiB VRAM free; stage "
+              "%.2f GiB + 10 GiB headroom)",
+              "retained" if retain else "transient", free_bytes / gib,
+              stage / gib)
+    return retain
 
 
 def _read_header(path):
@@ -212,12 +269,15 @@ def transform_config(spec):
 _CACHE = {}
 
 
-def load_vdn_checkpoint(path):
+def load_vdn_checkpoint(path, prefer_int8=False):
     """Read model_spec.json + linear_branch + adapters. Returns
-    (cfg, branch_weights_by_block, {adapter_name: (sd, adapter_spec)}). Cached by
-    (path, mtime) so re-running the node doesn't re-read 5 GB."""
-    branch_path = _branch_file(path)
-    stamp = (path, os.path.getmtime(branch_path))
+    (cfg, branch_weights_by_block, {adapter_name: (loader, adapter_spec)}). Cached
+    by (path, branch file, mtime) so re-running the node doesn't re-read the
+    metadata. Branch tensors stay disk-backed (LazyBranchTensor); adapters are
+    loaded from their safetensors at APPLY time (loader()), not cached as loaded
+    dicts for the process lifetime."""
+    branch_path = _branch_file(path, prefer_int8=prefer_int8)
+    stamp = (path, branch_path, os.path.getmtime(branch_path))
     hit = _CACHE.get(stamp)
     if hit is not None:
         return hit
@@ -265,7 +325,11 @@ def load_vdn_checkpoint(path):
             cfg_file = os.path.join(adir, "adapter_config.json")
             weights_file = os.path.join(adir, "adapter_model.safetensors")
             if os.path.isfile(cfg_file) and os.path.isfile(weights_file):
-                adapters[name] = (load_file(weights_file), _read_json(cfg_file))
+                # Loader, not the loaded dict: the (fp32-on-disk) adapter tensors
+                # are read from the safetensors at apply time and upcast there,
+                # not held in RAM for the process lifetime.
+                adapters[name] = (functools.partial(load_file, weights_file),
+                                  _read_json(cfg_file))
 
     result = (cfg, branches, adapters)
     _CACHE.clear()

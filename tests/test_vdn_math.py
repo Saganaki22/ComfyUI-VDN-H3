@@ -136,6 +136,67 @@ def test_delta_scan():
     print("  vdn_scaled closed form: ok")
 
 
+def test_scan_compiled_parity():
+    """fast_kernels runs the bidirectional scan as one reduce-overhead compiled
+    graph; it must match the eager bank scan on identical inputs (the cudagraph
+    changes kernel LAUNCH, not math). Also pins the reused-bank invariant: a
+    second eager call overwrites the banks with identical values."""
+    torch.manual_seed(7)
+    F_, H, D = 11, 3, 16
+    alpha = torch.rand(F_, H, D) * 0.5 + 0.5
+    a_raw = torch.randn(F_, H, D, D) * 0.05
+    a_raw = 0.5 * (a_raw + a_raw.transpose(-1, -2))
+    b_raw = torch.randn(F_, H, D, D) * 0.3
+    text = torch.randn(H, D, D) * 0.2
+    backend = B.VdnDelta(None)
+    with torch.no_grad():
+        for ts in (None, text):
+            e_fwd, e_rev = B.run_scans(backend, alpha, a_raw, b_raw, text_state=ts)
+            e_fwd, e_rev = e_fwd.clone(), e_rev.clone()  # banks are reused
+            c_fwd, c_rev = B.run_scans(backend, alpha, a_raw, b_raw,
+                                       text_state=ts, fuse=True)
+            assert (c_fwd - e_fwd).abs().max() < 1e-5, "compiled fwd scan differs"
+            assert (c_rev - e_rev).abs().max() < 1e-5, "compiled rev scan differs"
+            r_fwd, r_rev = B.run_scans(backend, alpha, a_raw, b_raw, text_state=ts)
+            assert torch.equal(r_fwd, e_fwd) and torch.equal(r_rev, e_rev), \
+                "reused banks changed the result"
+    print("  scan compiled/eager parity + bank reuse: ok")
+
+
+def test_transient_buffer_parity():
+    """Transient mode (retain_buffers=False, the VRAM-pressure path) allocates
+    the scan banks / delta scratch per call like v1.3.1; values must be
+    identical to the retained path. Also asserts transient calls leave no
+    cache entries behind."""
+    torch.manual_seed(8)
+    F_, H, D = 9, 3, 16
+    alpha = torch.rand(F_, H, D) * 0.5 + 0.5
+    a_raw = torch.randn(F_, H, D, D) * 0.05
+    a_raw = 0.5 * (a_raw + a_raw.transpose(-1, -2))
+    b_raw = torch.randn(F_, H, D, D) * 0.3
+    backend = B.VdnDelta(None)
+    banks_before = len(B._SCAN_BANKS)
+    scratch_before = len(B._DELTA_SCRATCH)
+    with torch.no_grad():
+        r_fwd, r_rev = B.run_scans(backend, alpha, a_raw, b_raw, retain=True)
+        r_fwd, r_rev = r_fwd.clone(), r_rev.clone()
+        t_fwd, t_rev = B.run_scans(backend, alpha, a_raw, b_raw, retain=False)
+        assert torch.equal(t_fwd, r_fwd) and torch.equal(t_rev, r_rev), \
+            "transient scan differs from retained"
+        trans, inj_r = backend.factor_apply(alpha, a_raw, b_raw, retain=True)
+        _, inj_t = backend.factor_apply(alpha, a_raw, b_raw, retain=False)
+        assert torch.equal(inj_t, inj_r), "transient delta solve differs"
+    assert len(B._SCAN_BANKS) == banks_before + 1, "retained call should cache banks"
+    assert len(B._DELTA_SCRATCH) == scratch_before + 1, "retained call should cache scratch"
+    # window scratch transient path (same gather semantics)
+    from vdn_h3.window import _kv_scratch
+    k1, v1 = _kv_scratch(64, 2, 8, torch.device("cpu"), torch.bfloat16, retain=True)
+    k2, v2 = _kv_scratch(64, 2, 8, torch.device("cpu"), torch.bfloat16, retain=False)
+    assert k1.data_ptr() != k2.data_ptr(), \
+        "transient scratch must be a fresh (non-cached) allocation"
+    print("  transient/retained buffer parity: ok")
+
+
 def test_gather():
     torch.manual_seed(2)
     F_, H, D = 13, 2, 8
@@ -213,6 +274,8 @@ if __name__ == "__main__":
     print("VDN-H3 port numerical tests")
     test_window_softmax()
     test_delta_scan()
+    test_scan_compiled_parity()
+    test_transient_buffer_parity()
     test_gather()
     test_adapter_fold()
     print("ALL PASS")
