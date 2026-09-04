@@ -7,6 +7,8 @@
 - Base model: `minimax_h3_fl2va_int8_convrot.safetensors` (int8 convrot)
 - VDN checkpoint: `stage-dmd-step-250` (8-step model), `apply_turbo_adapter` ON
 - Node settings: `strength 1.0`, `lora_mode bypass`, `branch_weights stream`
+  (settings as measured; `bypass` is no longer recommended — see the `lora_mode`
+  note in the README)
 - Sampler: euler / simple, **8 steps**, seed **42**, CFG 1, t2v + audio
 
 ## 1280x736, 145 frames (F=37, S=920, seq 34,487 tokens)
@@ -41,11 +43,14 @@ default.
   visually verified good. The fast_kernels runs confirmed the compiled path
   actually executed (epilogue + state gather + frame-major q store: the expected
   small single-rounding divergence from eager, quality intact).
-- **merge vs bypass at a fixed seed gives different but equally valid videos**
-  (~26/255 mean per-pixel diff): merge rounds the LoRA deltas into the int8
-  weight grid, bypass applies them at full precision per forward, and 8 steps of
-  sampling amplifies that into a different trajectory. Not a bug — judge modes by
-  quality, not by seed-matching. On int8 bases bypass is the truer application.
+- **merge vs bypass at a fixed seed gives different videos** (~26/255 mean
+  per-pixel diff). Later measurement showed the two modes are not equivalent in
+  quality: bypass applies the deltas in activation space, where bf16 rounding
+  noise is amplified by the deep blocks (~10% of feature magnitude by block 49)
+  and visibly degrades 8-step DMD checkpoints, while merge reproduces the
+  validated weights exactly. v1.2.0 therefore defaults to `merge`, which is
+  required for `stage-dmd-*` checkpoints (see the `lora_mode` note in the
+  README).
 
 ### v1.0.0
 
