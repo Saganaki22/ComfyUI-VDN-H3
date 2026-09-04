@@ -10,6 +10,7 @@ import logging
 import os
 
 import folder_paths
+import torch
 from safetensors.torch import load_file
 
 _log = logging.getLogger("comfy.vdn")
@@ -17,6 +18,63 @@ _log = logging.getLogger("comfy.vdn")
 SUPPORTED_DELTA_RULES = ("vdn_solve", "sana_scaled", "vdn_scaled")
 SUPPORTED_ANCHORS = ("none", "columns", "rows", "both")
 SHORT_CONV_TARGETS = ("q", "k", "v")
+
+BRANCH_FILE = "model.safetensors"
+BRANCH_FILE_INT8 = "model_int8_convrot_comfyui.safetensors"
+
+try:
+    from comfy_kitchen.tensor import QuantizedTensor, TensorWiseINT8Layout
+    _KITCHEN_OK = True
+except ImportError:  # pragma: no cover - kitchen ships with comfy
+    QuantizedTensor = TensorWiseINT8Layout = None
+    _KITCHEN_OK = False
+
+
+def _branch_file(path):
+    """The stage's branch file: plain, or the pre-quantized int8_convrot_comfyui one."""
+    plain = os.path.join(path, "linear_branch", BRANCH_FILE)
+    if os.path.isfile(plain):
+        return plain
+    quant = os.path.join(path, "linear_branch", BRANCH_FILE_INT8)
+    if os.path.isfile(quant):
+        return quant
+    return plain
+
+
+def _restore_quantized(sd):
+    """Rebuild Comfy Kitchen QuantizedTensors from comfy_quant metadata keys.
+
+    Mirrors ComfyUI's own int8-convrot model format (see comfy/ops.py: the
+    <layer>.comfy_quant JSON + <layer>.weight_scale companion tensors): the
+    weights stay QuantizedTensor / TensorWiseINT8Layout -- nothing is
+    dequantized at load time. orig_dtype is bf16: the branch always computes
+    in bf16 and the format does not carry it.
+    """
+    if not _KITCHEN_OK:
+        return sd
+    conf_keys = [k for k in sd if k.endswith(".comfy_quant")]
+    if not conf_keys:
+        return sd
+    for conf_key in conf_keys:
+        conf = json.loads(bytes(sd[conf_key].tolist()).decode("utf-8"))
+        if conf.get("format") != "int8_tensorwise":
+            raise ValueError(f"{conf_key}: unsupported quantization format "
+                             f"{conf.get('format')!r}")
+        layer = conf_key[: -len(".comfy_quant")]
+        wkey = layer + ".weight"
+        skey = wkey + "_scale"
+        if wkey not in sd or skey not in sd:
+            raise ValueError(f"{conf_key}: missing {wkey} or {skey}")
+        qdata = sd.pop(wkey)
+        scale = sd.pop(skey)
+        params = TensorWiseINT8Layout.Params(
+            scale=scale, orig_dtype=torch.bfloat16,
+            orig_shape=tuple(qdata.shape), is_weight=True,
+            convrot=bool(conf.get("convrot", False)),
+            convrot_groupsize=int(conf.get("convrot_groupsize", 256)))
+        sd[wkey] = QuantizedTensor(qdata, "TensorWiseINT8Layout", params)
+        del sd[conf_key]
+    return sd
 
 
 def register_folder():
@@ -31,13 +89,14 @@ def vdn_folders():
 
 
 def list_vdn_checkpoints():
-    """Relative names of directories holding linear_branch/model.safetensors."""
+    """Relative names of directories holding a linear_branch branch file (plain
+    bf16 or pre-quantized int8_convrot_comfyui)."""
     found = []
     for root in vdn_folders():
         if not os.path.isdir(root):
             continue
         for dirpath, dirnames, _files in os.walk(root):
-            if os.path.isfile(os.path.join(dirpath, "linear_branch", "model.safetensors")):
+            if os.path.isfile(_branch_file(dirpath)):
                 rel = os.path.relpath(dirpath, root)
                 found.append(rel.replace("\\", "/"))
                 dirnames[:] = []
@@ -47,7 +106,7 @@ def list_vdn_checkpoints():
 def resolve_vdn_checkpoint(name):
     for root in vdn_folders():
         path = os.path.join(root, *name.split("/"))
-        if os.path.isfile(os.path.join(path, "linear_branch", "model.safetensors")):
+        if os.path.isfile(_branch_file(path)):
             return path
     raise FileNotFoundError(
         f"VDN checkpoint {name!r} not found under {vdn_folders()}. Download the "
@@ -105,8 +164,8 @@ def load_vdn_checkpoint(path):
     """Read model_spec.json + linear_branch + adapters. Returns
     (cfg, branch_weights_by_block, {adapter_name: (sd, adapter_spec)}). Cached by
     (path, mtime) so re-running the node doesn't re-read 5 GB."""
-    stamp = (path, os.path.getmtime(os.path.join(path, "linear_branch",
-                                                 "model.safetensors")))
+    branch_path = _branch_file(path)
+    stamp = (path, os.path.getmtime(branch_path))
     hit = _CACHE.get(stamp)
     if hit is not None:
         return hit
@@ -119,7 +178,7 @@ def load_vdn_checkpoint(path):
     spec = _read_json(spec_path)
     cfg = transform_config(spec)
 
-    branch_sd = load_file(os.path.join(path, "linear_branch", "model.safetensors"))
+    branch_sd = _restore_quantized(load_file(branch_path))
     num_blocks = 0
     for key in branch_sd:
         if ".attn.to_out_linear.weight" in key:
