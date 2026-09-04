@@ -49,7 +49,7 @@ faster in this single-run A/B. Identical output.
 **Ref2V example (INT8 ConvRot stage)** — ref2va base, 8 steps, er_sde / beta,
 768x768:
 
-<video src="https://github.com/Saganaki22/ComfyUI-VDN-H3/releases/download/exp-int8-media/int8-ref2va-8step-vdn.mp4" controls loop></video>
+https://github.com/user-attachments/assets/65fd49e1-a4a3-4e28-9f3d-9dc8337354a7
 
 
 ### Same seed 
@@ -172,8 +172,8 @@ output; wall clock from a single run each (±5 s sampling).
 
 | stage | precision | wall time | peak VRAM (min free) | video |
 |---|---|---|---|---|
-| `stage-dmd-step-250` | bf16 | ~111 s | 3.6 GB free | [assets/ab_bf16_8step_er_sde_beta.mp4](assets/ab_bf16_8step_er_sde_beta.mp4) |
-| `stage-dmd-step-250-int8_convrot_comfyui` | int8 convrot | ~95 s | 8.3 GB free | [assets/ab_int8convrot_8step_er_sde_beta.mp4](assets/ab_int8convrot_8step_er_sde_beta.mp4) |
+| `stage-dmd-step-250` | bf16 | ~111 s | 3.6 GB free | <video src="https://github.com/user-attachments/assets/7539d6be-95fd-48e4-b3a4-b7bae677f194" controls></video> |
+| `stage-dmd-step-250-int8_convrot_comfyui` | int8 convrot | ~95 s | 8.3 GB free | <video src="https://github.com/user-attachments/assets/a5204f2e-7fab-40df-b761-f1f4d9caf54a" controls></video> |
 
 The 8-step model's `turbo` adapter replaces (does not stack with) community
 MiniMax-H3 turbo LoRAs — do not run both.
