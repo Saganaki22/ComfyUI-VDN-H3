@@ -148,8 +148,8 @@ VDN 发布版**不包含基座权重** —— 只有分支与 LoRA 适配器,运
 4.3 -> 2.2 GB,加载峰值显存低约 4.7 GB)已发布于
 [drbaph/vdn-minimax-h3-int8-convrot-comfyui](https://huggingface.co/drbaph/vdn-minimax-h3-int8-convrot-comfyui) ——
 下载到 `models/vdn/`(如 `hf download drbaph/vdn-minimax-h3-int8-convrot-comfyui --local-dir models/vdn/vdn-minimax-h3-int8-convrot-comfyui`);
-文件夹名即为 `vdn_checkpoint` 中的选项。加载预量化 stage 需要本
-分支;也可以用 `tools/quantize_vdn_branch_int8.py` 自行量化任意 stage。
+文件夹名即为 `vdn_checkpoint` 中的选项。加载预量化 stage 需要 v1.3.0+;
+也可以用 `tools/quantize_vdn_branch_int8.py` 自行量化任意 stage。
 
 8 步模型的 `turbo` 适配器**替代**(而非叠加)社区版 MiniMax-H3 turbo LoRA
 —— 两者不要同时启用。

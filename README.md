@@ -167,7 +167,7 @@ while loading) is at
 [drbaph/vdn-minimax-h3-int8-convrot-comfyui](https://huggingface.co/drbaph/vdn-minimax-h3-int8-convrot-comfyui) —
 download it into `models/vdn/` (e.g. `hf download drbaph/vdn-minimax-h3-int8-convrot-comfyui --local-dir models/vdn/vdn-minimax-h3-int8-convrot-comfyui`);
 the folder name becomes the `vdn_checkpoint` entry. Loading
-pre-quantized stages requires this branch; you can also quantize any stage
+pre-quantized stages requires v1.3.0+; you can also quantize any stage
 yourself with `tools/quantize_vdn_branch_int8.py`.
 
 ### BF16 vs INT8 ConvRot — A/B (same seed & settings)
