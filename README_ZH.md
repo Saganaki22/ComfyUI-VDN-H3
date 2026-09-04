@@ -40,7 +40,6 @@ Attention** 线性分支,把平方级的长距离注意力替换为常数成本�
 
 两侧种子与设置完全相同（merge、`cache_gpu`），仅 stage 不同。INT8 stage 的
 分支矩阵乘法快 2.7 倍，此单次 A/B 端到端快约 1.2 倍，输出一致。
-[详情与耗时表](#bf16-vs-int8-convrot--ab-相同种子与设置)。
 
 </details>
 
