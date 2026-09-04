@@ -37,6 +37,20 @@ What you don't get: the headline numbers. The official 74.5× figure combines 8-
 |:---:|:---:|
 | <video src="https://github.com/user-attachments/assets/89cc7155-ca89-459e-9996-5b5f6bfcd284" controls></video> | <video src="https://github.com/user-attachments/assets/5cc9906e-acec-4c61-a3b9-17c79153945b" controls></video> |
 
+| VDN-H3 bf16 stage, er_sde / beta — 8 steps, 1280x736, 1:51 | VDN-H3 INT8 ConvRot stage, er_sde / beta — 8 steps, 1280x736, 1:35 |
+|:---:|:---:|
+| <video src="assets/ab_bf16_8step_er_sde_beta.mp4" controls loop></video> | <video src="assets/ab_int8convrot_8step_er_sde_beta.mp4" controls loop></video> |
+
+Same seed and settings on both sides (merge, `cache_gpu`); only the stage
+differs. The INT8 stage's branch matmuls run 2.7x faster; end-to-end ~1.2x
+faster in this single-run A/B. Identical output.
+[Details + timing table](#bf16-vs-int8-convrot--ab-same-seed--settings).
+
+**Ref2V example (INT8 ConvRot stage)** — ref2va base, 8 steps, er_sde / beta,
+768x768:
+
+<video src="assets/int8-ref2va-8step-vdn.mp4" controls loop></video>
+
 
 ### Same seed 
 `981445682258077`
@@ -146,7 +160,8 @@ base models.**
 8-step stage (identical outputs, branch 4.3 -> 2.2 GB, ~4.7 GB lower peak VRAM
 while loading) is at
 [drbaph/vdn-minimax-h3-int8-convrot-comfyui](https://huggingface.co/drbaph/vdn-minimax-h3-int8-convrot-comfyui) —
-drop it into `models/vdn/` and select it in `vdn_checkpoint`. Loading
+download it into `models/vdn/` (e.g. `hf download drbaph/vdn-minimax-h3-int8-convrot-comfyui --local-dir models/vdn/vdn-minimax-h3-int8-convrot-comfyui`);
+the folder name becomes the `vdn_checkpoint` entry. Loading
 pre-quantized stages requires this branch; you can also quantize any stage
 yourself with `tools/quantize_vdn_branch_int8.py`.
 

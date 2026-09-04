@@ -31,6 +31,19 @@ Attention** 线性分支,把平方级的长距离注意力替换为常数成本�
 |:---:|:---:|
 | <video src="https://github.com/user-attachments/assets/89cc7155-ca89-459e-9996-5b5f6bfcd284" controls></video> | <video src="https://github.com/user-attachments/assets/5cc9906e-acec-4c61-a3b9-17c79153945b" controls></video> |
 
+| VDN-H3 bf16 stage、er_sde / beta —— 8 步，1280x736，1:51 | VDN-H3 INT8 ConvRot stage、er_sde / beta —— 8 步，1280x736，1:35 |
+|:---:|:---:|
+| <video src="assets/ab_bf16_8step_er_sde_beta.mp4" controls loop></video> | <video src="assets/ab_int8convrot_8step_er_sde_beta.mp4" controls loop></video> |
+
+两侧种子与设置完全相同（merge、`cache_gpu`），仅 stage 不同。INT8 stage 的
+分支矩阵乘法快 2.7 倍，此单次 A/B 端到端快约 1.2 倍，输出一致。
+[详情与耗时表](#bf16-vs-int8-convrot--ab-相同种子与设置)。
+
+**Ref2V 示例（INT8 ConvRot stage）** —— ref2va 基座，8 步，er_sde / beta，
+768x768：
+
+<video src="assets/int8-ref2va-8step-vdn.mp4" controls loop></video>
+
 ### 相同种子
 
 `981445682258077`
@@ -130,7 +143,8 @@ VDN 发布版**不包含基座权重** —— 只有分支与 LoRA 适配器,运
 **提供预量化的 INT8 stage:** 8 步 stage 的 INT8 ConvRot 版本(输出一致,分支
 4.3 -> 2.2 GB,加载峰值显存低约 4.7 GB)已发布于
 [drbaph/vdn-minimax-h3-int8-convrot-comfyui](https://huggingface.co/drbaph/vdn-minimax-h3-int8-convrot-comfyui) ——
-放入 `models/vdn/` 后在 `vdn_checkpoint` 中选择即可。加载预量化 stage 需要本
+下载到 `models/vdn/`(如 `hf download drbaph/vdn-minimax-h3-int8-convrot-comfyui --local-dir models/vdn/vdn-minimax-h3-int8-convrot-comfyui`);
+文件夹名即为 `vdn_checkpoint` 中的选项。加载预量化 stage 需要本
 分支;也可以用 `tools/quantize_vdn_branch_int8.py` 自行量化任意 stage。
 
 8 步模型的 `turbo` 适配器**替代**(而非叠加)社区版 MiniMax-H3 turbo LoRA
