@@ -81,15 +81,16 @@ class _StreamPrefetcher:
 
     def request(self, index, fetch):
         with self._lock:
-            if index in self._done or index in self._inflight:
-                return
             gen = self._gen
-            self._inflight.add(index)
+            request = (gen, index)
+            if index in self._done or request in self._inflight:
+                return
+            self._inflight.add(request)
         try:
             self._queue.put_nowait((gen, index, fetch))
         except queue.Full:
             with self._lock:
-                self._inflight.discard(index)
+                self._inflight.discard(request)
 
     def _record(self, t, stream):
         """Mark every storage of t (plain or kitchen QuantizedTensor) as used on
@@ -132,7 +133,7 @@ class _StreamPrefetcher:
                              "will read synchronously", e)
             finally:
                 with self._lock:
-                    self._inflight.discard(index)
+                    self._inflight.discard((gen, index))
 
     def take(self, index):
         with self._lock:
@@ -152,6 +153,7 @@ class _StreamPrefetcher:
         with self._lock:
             self._gen += 1
             self._done.clear()
+            self._inflight.clear()
         try:
             while True:
                 self._queue.get_nowait()
@@ -194,6 +196,7 @@ class VDNState:
         self.head_dim = head_dim
         self.layout = None                    # published by the wrapper each forward
         self.cache_gpu = False
+        self.owns_compiler_switch = False
         self.retain_buffers = True            # auto-resolved at apply time
         self._gpu_cache = {}
         self._act = None                      # per-geometry activation scratch
@@ -298,27 +301,31 @@ def layout_from_payload(payload, x, context, cfg):
                      cfg["radius"], cfg["chunk"], cfg["anchor_frames"])
 
 
+def _without_comfy_compiler(executor, *args, **kwargs):
+    # MiniMax starts its allocation graph before DIFFUSION_MODEL wrappers.
+    # APPLY_MODEL encloses that outer forward too, including graph cleanup.
+    previous = comfy.cli_args.args.disable_comfy_compiler
+    comfy.cli_args.args.disable_comfy_compiler = True
+    try:
+        return executor(*args, **kwargs)
+    finally:
+        comfy.cli_args.args.disable_comfy_compiler = previous
+
+
 def make_layout_wrapper(state):
     """DIFFUSION_MODEL wrapper: publish the layout, run the model, clear it."""
 
     def wrap(executor, *args, **kwargs):
-        # comfy builds with the model compiler crash on VDN forwards (the
-        # malloc-graph planner cannot trace them); nodes.py flips the switch
-        # off when the compiler stack exists, and we scope it to exactly this
-        # forward so non-VDN workflows keep it.
-        owns_switch = getattr(state, "owns_compiler_switch", False)
-        if owns_switch:
-            comfy.cli_args.args.disable_comfy_compiler = True
-        state.layout = layout_from_payload(kwargs.get("minimax_payload"),
-                                           args[0], args[2], state.cfg)
-        state.forwards += 1
-        lay = state.layout
-        _once(("layout", lay.seq_len, lay.num_frames, lay.tokens_per_frame),
-              f"layout: seq {lay.seq_len} rows, video [{lay.video_start}, "
-              f"{lay.video_end}), F={lay.num_frames}, S={lay.tokens_per_frame}, "
-              f"frame {lay.frame_size}, text {lay.text_len} rows, "
-              f"window {'dense (full cover)' if lay.full_cover else lay.bounds[0]}")
         try:
+            state.layout = layout_from_payload(kwargs.get("minimax_payload"),
+                                               args[0], args[2], state.cfg)
+            state.forwards += 1
+            lay = state.layout
+            _once(("layout", lay.seq_len, lay.num_frames, lay.tokens_per_frame),
+                  f"layout: seq {lay.seq_len} rows, video [{lay.video_start}, "
+                  f"{lay.video_end}), F={lay.num_frames}, S={lay.tokens_per_frame}, "
+                  f"frame {lay.frame_size}, text {lay.text_len} rows, "
+                  f"window {'dense (full cover)' if lay.full_cover else lay.bounds[0]}")
             return executor(*args, **kwargs)
         except comfy.model_management.InterruptProcessingException:
             # A cancelled mid-run leaves this node's GPU cache behind and the
@@ -336,8 +343,6 @@ def make_layout_wrapper(state):
             torch.cuda.empty_cache()
             raise
         finally:
-            if owns_switch:
-                comfy.cli_args.args.disable_comfy_compiler = False
             state.layout = None
 
     return wrap
@@ -423,6 +428,7 @@ def make_vdn_forward(attn, state, block_index):
                 q4, k4, rope_freqs, qw, kw, epsilon=q_norm.eps, rot_dim=rot)
             q = q4[0]
             k = k4[0]
+            del q4, k4
         else:
             q = q_norm(q_raw)
             k = k_norm(k_raw)
@@ -463,7 +469,7 @@ def make_vdn_forward(attn, state, block_index):
                 v.contiguous().transpose(0, 1).unsqueeze(0))
             softmax_out = optimized_attention(
                 q, k, v, heads, mask=None, skip_reshape=True,
-                transformer_options=transformer_options).squeeze(0)
+                transformer_options=transformer_options).reshape(s, heads, head_dim)
 
         # The roped/raw projections are dead from here (~3 GiB at H3 scale, held
         # alive by views of the qkv_proj buffer); free them before the gate, the
@@ -480,7 +486,7 @@ def make_vdn_forward(attn, state, block_index):
         else:
             flat = softmax_out.reshape(s, -1)
         out = out_proj(flat.type_as(x))
-        del softmax_out
+        del softmax_out, flat
 
         if linear_active:
             readout = branch.readout(
@@ -492,6 +498,7 @@ def make_vdn_forward(attn, state, block_index):
             # last consumer, and the allocator re-serves the same block next
             # time (no churn, no residency past one block)
             state._act = None
+            del buf, q_raw_video, k_raw_video, v_video, text_k_raw, text_v_raw
             out[lay.video_start:lay.video_end] += F.linear(
                 readout.type_as(x), w["to_out_linear.weight"])
         return out
@@ -520,3 +527,6 @@ def apply_vdn(new_model, state):
             make_vdn_forward(block.attn, state, i))
     new_model.add_wrapper_with_key(WrappersMP.DIFFUSION_MODEL, "vdn_h3",
                                    make_layout_wrapper(state))
+    if state.owns_compiler_switch:
+        new_model.add_wrapper_with_key(WrappersMP.APPLY_MODEL, "vdn_h3_compiler",
+                                       _without_comfy_compiler)

@@ -52,6 +52,21 @@ https://github.com/user-attachments/assets/65fd49e1-a4a3-4e28-9f3d-9dc8337354a7
 
 `981445682258077`
 
+## v1.5.0
+
+- 长视频的逐帧统计准备现在限制在约 1 GiB 工作区内,不再一次性展开全部帧。
+  在报告中的 72 潜在帧、每帧 1,032 token 的尺寸下,完整 INT8 分支路径的实测
+  峰值额外分配从 9.41 GiB 降至 6.81 GiB,输出逐位一致,运行时间基本不变。
+- 修复文本精炼器注意力适配器路径映射;这些发布权重此前因未匹配 ComfyUI 的
+  融合 QKV 布局而被跳过。
+- 修复稠密全覆盖注意力形状、query 短卷积、取消后的流式预取、FlexAttention
+  mask 缓存上限以及不完整 INT8 检查点验证。
+- 更早释放大型 QKV 与分支中间张量,并移除每个 block 的一次 GPU 同步。
+  Comfy 编译器规避逻辑现在覆盖完整模型调用,并始终恢复全局设置。
+
+CUDA 回归测试共 46 项,全部通过且无跳过。完整测量与上游数学对照见
+[PerformanceReview.md](PerformanceReview.md)。
+
 ## 安装
 
 1. 克隆到 `ComfyUI/custom_nodes/` 并重启 ComfyUI:
@@ -199,8 +214,8 @@ softmax 窗口与锚点帧(发布规格 `radius=1, chunk=5, anchor_frames=both`)
 ## 显存与性能
 
 显存主要由基座模型决定;VDN 增加约 4.3 GB 分支权重(`stream` 模式下按块流动,
-工作集增量约为一个块的 ~86 MB,外加注意力内部约 `2 x seq_len x 7168 x 2` 字节
-的临时 q/k 副本)。
+工作集增量约为一个块的 ~86 MB)。注意力内部的临时 q/k 副本会在分支运行前
+释放,长视频的逐帧统计准备则采用有上限的分批处理。
 
 RTX 5090 实测(int8 convrot 基座,`stream` 模式,sage2 补丁):1280x736、
 145 帧、8 步、euler/simple、seed 42,约 17 秒/it(采样约 2:15),含音频。
@@ -228,8 +243,9 @@ fp8 线性层 + FA4/flex 内核的组合。本移植的单卡收益应对标约 
   卸载或重启,非 VDN 工作流始终使用 comfy 自身编译器(控制台有一条警告说明)。
   手动等效方案:启动参数加
   `--disable-comfy-compiler`,或使用 2026-09-04 之前的 comfy 版本。
-- **OOM** —— 用 `branch_weights: stream`(默认)、`lora_mode: merge`、更短的
-  片段或更小的分辨率。**中途取消**:VDN 会在取消时清掉自己的 GPU 缓存,让重跑
+- **OOM** —— 用 `branch_weights: auto`(默认;显存紧张时自动选择 `stream`)、
+  `lora_mode: merge`、更短的片段或更小的分辨率。v1.5.0 也限制了长视频统计
+  工作区。**中途取消**:VDN 会在取消时清掉自己的 GPU 缓存,让重跑
   从干净状态开始;如果是基座模型因显存压力被挤到内存,重跑前手动释放一次
   (Manager 的 Free、Unload 节点或 `POST /free`)——那部分驻留属于 comfy,不归本节点管。
 - **8 步下动作异常** —— 确认 8 步配 `apply_turbo_adapter` 开,或约 50 步配关;

@@ -178,8 +178,7 @@ def _lazy_branch_sd(path):
         conf = confs.get(layer) if layer else None
         scale_key = key + "_scale" if conf else None
         if conf and scale_key not in header:
-            conf = None
-            scale_key = None
+            raise ValueError(f"{path}: quantized weight {key} is missing {scale_key}")
         out[key] = LazyBranchTensor(
             path, key, torch.Size(meta["shape"]),
             SAFETENSORS_DTYPES.get(meta["dtype"]), scale_key, conf)

@@ -17,22 +17,23 @@ import vdn_h3.spec as spec
 _log = logging.getLogger("comfy.vdn")
 
 
-_COMPILER_DISABLED_BY_VDN = False
 _COMPILER_WARNED = False
 
 
-def _disable_comfy_compiler_on_broken_builds():
+def _needs_comfy_compiler_workaround():
     """Comfy builds from 2026-09-04 ship a model compiler + aimdo malloc-graph
     that hard-fails on patched MiniMax-H3 forwards (graph breaks raise
     'aimdo memory compile error'; some paths abort the process mid-step). The
-    node does not need that compiler, so on affected builds we switch it off --
+    node does not need that compiler, so on affected builds the APPLY_MODEL
+    wrapper switches it off --
     the same effect as launching with --disable-comfy-compiler, without asking
-    anything of the user. hybrid.py scopes the switch to VDN forwards only
+    anything of the user. hybrid.py scopes the switch to VDN model calls only
     (restored in a finally after every step), so non-VDN workflows keep it.
     No-op on builds without the compiler stack.
 
-    Returns True when the switch is ours to manage."""
-    global _COMPILER_DISABLED_BY_VDN, _COMPILER_WARNED
+    Only detect here: a failed node application must not change a global flag.
+    Returns True when the forward wrapper needs to manage the switch."""
+    global _COMPILER_WARNED
     try:
         args = comfy.cli_args.args
         # The compiler stack (comfy 2026-09-04, "Introduce Comfy Compiler") is
@@ -46,9 +47,7 @@ def _disable_comfy_compiler_on_broken_builds():
         if aimdo is None or not hasattr(aimdo, "malloc_graph"):
             return False
         if getattr(args, "disable_comfy_compiler", False):
-            return _COMPILER_DISABLED_BY_VDN
-        args.disable_comfy_compiler = True
-        _COMPILER_DISABLED_BY_VDN = True
+            return False
         if not _COMPILER_WARNED:
             _COMPILER_WARNED = True
             _log.warning(
@@ -67,7 +66,6 @@ def _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
     {adapter_name: float} map; `cfg_overrides` deviates from the checkpoint's trained
     spec (ablation knobs); `fast_kernels` torch.compiles the branch's hot spots
     (epilogue, state gather, frame-major q store, bidirectional scan)."""
-    _disable_comfy_compiler_on_broken_builds()
     path = spec.resolve_vdn_checkpoint(vdn_checkpoint)
     prefer_int8 = False
     retain = True
@@ -153,7 +151,7 @@ def _apply_vdn(model, vdn_checkpoint, strength, lora_mode, branch_weights,
             "visible output on torch 2.10) -- ablation use only, do not use for "
             "final renders", os.path.basename(path))
     state = VDNState(vdn_checkpoint, cfg, branches, num_heads, head_dim)
-    state.owns_compiler_switch = _disable_comfy_compiler_on_broken_builds()
+    state.owns_compiler_switch = _needs_comfy_compiler_workaround()
     state.retain_buffers = retain
     state.cache_gpu = branch_weights == "cache_gpu"
     state.softmax_backend = attention_backend

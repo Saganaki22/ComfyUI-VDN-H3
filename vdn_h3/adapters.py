@@ -22,6 +22,8 @@ def _comfy_path(key, is_refiner):
     """diffusers module path -> (comfy module path, conversion kind)."""
     if is_refiner:
         stem = key.replace("token_refiner.refiner_blocks.", "token_refiner.blocks.")
+        # Refiner attention is not wrapped by HybridAttention in diffusers.
+        stem = stem.replace(".attn.to_", ".attn.orig.to_")
     else:
         stem = key.replace("transformer_blocks.", "blocks.")
     for proj in _ATTN_QKV:

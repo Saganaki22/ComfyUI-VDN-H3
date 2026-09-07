@@ -70,6 +70,27 @@ https://github.com/user-attachments/assets/5b17a3fb-1361-4da9-b52c-603bd5e7c1f1
 ### Same seed 
 `981445682258077`
 
+## v1.5.0
+
+- Bounds long-clip frame-statistics preparation to about 1 GiB instead of
+  materializing every frame at once. At the reported 72-frame, 1,032-token
+  geometry, the complete INT8 branch path reduced measured peak additional
+  allocation from 9.41 GiB to 6.81 GiB with bit-identical output and effectively
+  unchanged runtime.
+- Restores the released text-refiner attention adapter weights, which were
+  previously skipped because their paths did not match ComfyUI's fused QKV
+  layout.
+- Fixes the dense full-coverage attention shape, query short-convolution support,
+  cancellation-safe stream prefetch, bounded FlexAttention mask caching, and
+  validation of incomplete INT8 checkpoints.
+- Releases large QKV and branch intermediates earlier and removes a per-block GPU
+  synchronization. The Comfy compiler workaround now encloses the complete model
+  call and always restores the process setting.
+
+The CUDA regression suite passes 46 tests with no skips. Full measurements and
+the upstream mathematical comparison are in
+[PerformanceReview.md](PerformanceReview.md).
+
 
 ## Install
 
@@ -248,9 +269,9 @@ the K/V short conv, output gates, and both LoRA adapters.
 ## VRAM and performance
 
 The base model dominates VRAM; VDN adds ~4.3 GB of branch weights (streamed per
-block in `stream` mode, so the working-set increase is roughly one block's ~86 MB,
-plus transient raw q/k copies inside attention of about `2 x seq_len x 7168 x 2`
-bytes).
+block in `stream` mode, so the working-set increase is roughly one block's ~86 MB).
+Transient raw q/k copies inside attention are released before the branch runs,
+and long-clip frame-statistics preparation is processed in bounded batches.
 
 Measured on RTX 5090 (int8 convrot base, `stream` mode, sage2 patch): 1280x736,
 145 frames, 8 steps, euler/simple, seed 42, ~17 s/it (~2:15 sampling), audio
@@ -308,8 +329,9 @@ overlap.
   equivalents: launch comfy with `--disable-comfy-compiler`, or use a
   comfy build older than 2026-09-04.
 - **OOM** — keep `branch_weights: auto` (default; it picks `stream` under memory
-  pressure), use `lora_mode: merge`, tiled VAE decode, shorter clips, smaller
-  resolution. **Cancelling mid-run:** VDN drops its own GPU cache on cancel so
+  pressure), use `lora_mode: merge`, shorter clips, or a smaller resolution.
+  v1.5.0 also bounds the long-clip statistics workspace. **Cancelling mid-run:**
+  VDN drops its own GPU cache on cancel so
   reruns start clean; if the *base model* itself was pushed host-side by VRAM
   pressure, free/unload it once (Manager → Free, an Unload node, or
   `POST /free`) — that residency belongs to comfy, not the node.
