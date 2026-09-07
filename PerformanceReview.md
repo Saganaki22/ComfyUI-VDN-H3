@@ -6,6 +6,30 @@ Validation used the existing ComfyUI venv, PyTorch 2.10.0+cu130, and RTX 5090.
 
 ## Follow-up: long-clip allocation failure
 
+### Post-release streaming crash
+
+A subsequent v1.5.0 render failed during its second sampling step with a CUDA
+illegal memory access, reported in ComfyUI's base-weight transfer path. The
+geometry was 37 latent frames, 1,032 tokens/frame, grid 43×24 and 12 text tokens.
+The compiler wrapper was present in the traceback. The earlier isolated branch
+benchmarks did not exercise concurrent branch prefetch and dynamic base loading.
+
+Inspection found a separate lifetime bug inherited from v1.4.3: branch prefetch
+skipped `record_stream` for the entire `cudaMallocAsync` allocator. PyTorch
+2.10.0's [allocator source](https://github.com/pytorch/pytorch/blob/v2.10.0/c10/cuda/CUDAMallocAsyncAllocator.cpp#L567)
+requires recording cross-stream uses; its warning applies only when recording
+the original allocation stream. Skipping this protection can free branch
+weights before the consumer stream finishes reading them.
+
+The local follow-up restores recording for both allocators, records INT8 data
+and scale storage directly, and stops swallowing registration errors. CPU-only
+validation passed 43 tests with eight CUDA tests skipped, including handoff
+ordering and storage registration for plain and INT8 tensors. No GPU or full
+render validation was run for this follow-up. This fixes a demonstrated code
+defect; the asynchronous crash log alone does not establish its root cause.
+
+### v1.5.0 statistics batching
+
 The supplied crash log has 76,019 packed rows, 72 latent frames and 1,032
 tokens/frame. It ends in a native abort during FP32 frame-statistics preparation,
 not a caught CUDA out-of-memory exception. Memory pressure is plausible, but the

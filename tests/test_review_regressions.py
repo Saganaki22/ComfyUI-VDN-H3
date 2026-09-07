@@ -267,6 +267,50 @@ def test_compiler_wrapper_encloses_model_forward():
     assert hybrid.WrappersMP.DIFFUSION_MODEL in wrappers
 
 
+@pytest.mark.parametrize("allocator", ["native", "cudaMallocAsync"])
+@pytest.mark.parametrize("quantized", [False, True])
+def test_prefetch_take_protects_storage_on_consumer_stream(allocator, quantized, monkeypatch):
+    # CPU tensors and stream spies exercise the handoff without launching CUDA.
+    data = torch.ones(2, 256, dtype=torch.int8 if quantized else torch.bfloat16)
+    scale = torch.ones((), dtype=torch.float32)
+    if quantized:
+        weight = spec.QuantizedTensor(
+            data, "TensorWiseINT8Layout",
+            spec.TensorWiseINT8Layout.Params(
+                scale=scale, orig_dtype=torch.bfloat16,
+                orig_shape=(2, 256), is_weight=True, convrot=True,
+                convrot_groupsize=256))
+        expected = [data, scale]
+    else:
+        weight = data
+        expected = [data]
+    events = []
+    ready = object()
+    consumer = SimpleNamespace(wait_event=lambda event: events.append(("wait", event)))
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda: consumer)
+    monkeypatch.setattr(torch.cuda, "get_allocator_backend", lambda: allocator)
+    monkeypatch.setattr(torch.Tensor, "record_stream",
+                        lambda tensor, stream: events.append((id(tensor), stream)))
+    pf = hybrid._StreamPrefetcher.__new__(hybrid._StreamPrefetcher)
+    pf._lock = threading.Lock()
+    weights = {"weight": weight}
+    pf._done = {3: (weights, ready)}
+
+    assert pf.take(3) is weights
+    assert events == [("wait", ready)] + [(id(t), consumer) for t in expected]
+    assert pf.take(3) is None
+
+
+def test_prefetch_record_failure_is_not_hidden(monkeypatch):
+    def fail(tensor, stream):
+        raise RuntimeError("stream registration failed")
+
+    monkeypatch.setattr(torch.Tensor, "record_stream", fail)
+    pf = hybrid._StreamPrefetcher.__new__(hybrid._StreamPrefetcher)
+    with pytest.raises(RuntimeError, match="stream registration failed"):
+        pf._record(torch.ones(1), object())
+
+
 def test_cancelled_prefetch_can_request_same_block_again():
     # Pause before the worker takes the queued request: cancellation used to
     # drain that queue but leave its block permanently marked as in flight.

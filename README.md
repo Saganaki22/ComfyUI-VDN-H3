@@ -92,6 +92,20 @@ the upstream mathematical comparison are in
 [PerformanceReview.md](PerformanceReview.md).
 
 
+## v1.5.1
+
+- Fixes a branch-prefetch lifetime bug inherited from v1.4.3: `record_stream`
+  was skipped for the whole `cudaMallocAsync` allocator, but PyTorch 2.10's
+  cudaMallocAsync allocator does require cross-stream recording — its warning
+  only concerns recording a tensor's original allocation stream. Skipping the
+  protection could free branch weights while the consumer stream was still
+  reading them, implicated in a post-release CUDA illegal-memory-access crash.
+- The stream prefetcher now records every storage directly, including INT8
+  scale storage, and no longer swallows `record_stream` registration errors.
+- Regression tests cover prefetch handoff ordering and storage registration for
+  plain and INT8 tensors; the full suite passes 51 tests.
+
+
 ## Install
 
 1. Clone into `ComfyUI/custom_nodes/` and restart ComfyUI:

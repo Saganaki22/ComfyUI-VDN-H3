@@ -67,6 +67,16 @@ https://github.com/user-attachments/assets/65fd49e1-a4a3-4e28-9f3d-9dc8337354a7
 CUDA 回归测试共 46 项,全部通过且无跳过。完整测量与上游数学对照见
 [PerformanceReview.md](PerformanceReview.md)。
 
+## v1.5.1
+
+- 修复 v1.4.3 遗留的分支预取生命周期 bug:在 `cudaMallocAsync` 分配器下完全
+  跳过了 `record_stream`,但 PyTorch 2.10 的 cudaMallocAsync 分配器确实需要
+  跨流记录(其警告仅针对记录张量的原始分配流)。跳过该保护可能在消费流仍在
+  读取时提前释放分支权重,与发布后出现的 CUDA 非法内存访问崩溃相关。
+- 流式预取器现在直接记录每个 storage——包括 INT8 scale 存储——并且不再吞掉
+  `record_stream` 注册错误。
+- 回归测试覆盖普通与 INT8 张量的预取交接顺序和 storage 注册;全部 51 项测试通过。
+
 ## 安装
 
 1. 克隆到 `ComfyUI/custom_nodes/` 并重启 ComfyUI:

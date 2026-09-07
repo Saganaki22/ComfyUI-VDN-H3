@@ -42,23 +42,6 @@ def _once(key, message):
         _log.info(f"[vdn] {message}")
 
 
-_RECORD_STREAM_NEEDED = None
-
-
-def _record_stream_needed():
-    """record_stream exists for torch's caching allocator; under cudaMallocAsync
-    it is a no-op (the allocator is stream-ordered natively) and torch 2.10
-    warns on every call."""
-    global _RECORD_STREAM_NEEDED
-    if _RECORD_STREAM_NEEDED is None:
-        try:
-            _RECORD_STREAM_NEEDED = (
-                torch.cuda.get_allocator_backend() != "cudaMallocAsync")
-        except Exception:
-            _RECORD_STREAM_NEEDED = True
-    return _RECORD_STREAM_NEEDED
-
-
 class _StreamPrefetcher:
     """One-block lookahead for branch_weights="stream": while block i computes, a
     daemon thread reads block i+1's weights from the page cache to the GPU on its
@@ -96,22 +79,17 @@ class _StreamPrefetcher:
         """Mark every storage of t (plain or kitchen QuantizedTensor) as used on
         the consumer stream, so freeing it on the main thread can't be reused by
         the prefetch stream while the consumer is still reading."""
-        if not _record_stream_needed():
-            return
-        seen = [t]
+        # cudaMallocAsync also needs cross-stream lifetime tracking. Its warning
+        # only concerns recording a tensor's original allocation stream.
         inner = getattr(t, "_qdata", None)
-        if inner is not None:
-            seen.append(inner)
+        seen = [inner if inner is not None else t]
         params = getattr(t, "_params", None)
         for name in ("scale", "orig_weight", "bias"):
             sub = getattr(params, name, None)
             if isinstance(sub, torch.Tensor):
                 seen.append(sub)
         for x in seen:
-            try:
-                x.record_stream(stream)
-            except Exception:
-                pass
+            x.record_stream(stream)
 
     def _worker(self):
         while True:
